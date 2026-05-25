@@ -1,0 +1,114 @@
+@import url('https://fonts.googleapis.com/css2?family=Barlow:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+:root {
+    --bg: #f5f7f2;
+    --ink: #1f2a1f;
+    --accent: #1d6f5f;
+    --accent-2: #d98b3a;
+    --surface: #ffffff;
+    --max-width: 1080px;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    font-family: 'Barlow', system-ui, sans-serif;
+    color: var(--ink);
+    background: radial-gradient(circle at top right, #dfe9d8 0%, var(--bg) 45%);
+    line-height: 1.6;
+}
+
+.container {
+    width: min(var(--max-width), calc(100% - 2rem));
+    margin-inline: auto;
+}
+
+.site-header {
+    background: var(--surface);
+    border-bottom: 1px solid #d6dfd1;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}
+
+.header-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.9rem 0;
+}
+
+.brand {
+    text-decoration: none;
+    color: var(--ink);
+    font-weight: 700;
+    letter-spacing: 0.03em;
+}
+
+nav ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    gap: 1rem;
+}
+
+nav a {
+    text-decoration: none;
+    color: var(--ink);
+    font-weight: 600;
+}
+
+.hero,
+.content-page,
+.article-page {
+    background: var(--surface);
+    border: 1px solid #d6dfd1;
+    border-radius: 14px;
+    margin: 2rem 0;
+    padding: 1.5rem;
+}
+
+.hero h1,
+.content-page h1,
+.article-page h1 {
+    margin-top: 0;
+    line-height: 1.2;
+}
+
+.lead,
+.meta {
+    font-family: 'IBM Plex Mono', ui-monospace, monospace;
+    color: #4a5a4a;
+}
+
+.rich-text img {
+    max-width: 100%;
+    height: auto;
+}
+
+.site-footer {
+    border-top: 1px solid #d6dfd1;
+    background: var(--surface);
+    margin-top: 2rem;
+}
+
+.site-footer .container {
+    padding: 1rem 0;
+}
+
+@media (max-width: 760px) {
+    .header-inner {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    nav ul {
+        flex-wrap: wrap;
+        gap: 0.75rem;
+    }
+}

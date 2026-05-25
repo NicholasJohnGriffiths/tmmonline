@@ -1,0 +1,16 @@
+# OS/editor
+.vscode/
+.idea/
+.DS_Store
+
+# Build outputs
+**/bin/
+**/obj/
+
+# Local crawl artifacts
+migration-output/
+
+# User secrets and env
+*.user
+*.suo
+.env

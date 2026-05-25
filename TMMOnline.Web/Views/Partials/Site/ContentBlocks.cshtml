@@ -1,0 +1,16 @@
+@inherits UmbracoViewPage<IPublishedContent>
+@{
+    var bodyText = Model.Value<IHtmlContent>("bodyText");
+}
+
+@if (bodyText != null)
+{
+    <section class="rich-text">
+        @bodyText
+    </section>
+}
+
+@if (Model.HasValue("contentBlocks"))
+{
+    @await Html.GetBlockListHtmlAsync(Model, "contentBlocks")
+}

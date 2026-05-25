@@ -1,0 +1,19 @@
+@inherits UmbracoViewPage
+@{
+    var home = Model.Root();
+    var navItems = home?.Children()?.Where(x => x.IsVisible()) ?? Enumerable.Empty<IPublishedContent>();
+}
+
+<header class="site-header">
+    <div class="container header-inner">
+        <a class="brand" href="@home?.Url()">@home?.Name</a>
+        <nav aria-label="Main navigation">
+            <ul>
+                @foreach (var item in navItems)
+                {
+                    <li><a href="@item.Url()">@item.Name</a></li>
+                }
+            </ul>
+        </nav>
+    </div>
+</header>

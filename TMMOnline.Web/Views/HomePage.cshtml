@@ -1,0 +1,13 @@
+@inherits UmbracoViewPage
+@{
+    Layout = "_Layout.cshtml";
+    var heading = Model.Value<string>("heroHeading") ?? Model.Name;
+    var intro = Model.Value<string>("introText") ?? "Welcome to TMMOnline.";
+}
+
+<section class="hero">
+    <h1>@heading</h1>
+    <p>@intro</p>
+</section>
+
+@await Html.PartialAsync("Partials/Site/ContentBlocks", Model)

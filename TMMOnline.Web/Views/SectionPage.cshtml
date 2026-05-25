@@ -1,0 +1,17 @@
+@inherits UmbracoViewPage
+@{
+    Layout = "_Layout.cshtml";
+    var lead = Model.Value<string>("leadText");
+}
+
+<article class="content-page">
+    <header>
+        <h1>@Model.Name</h1>
+        @if (!string.IsNullOrWhiteSpace(lead))
+        {
+            <p class="lead">@lead</p>
+        }
+    </header>
+
+    @await Html.PartialAsync("Partials/Site/ContentBlocks", Model)
+</article>

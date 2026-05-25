@@ -1,0 +1,79 @@
+name: Build and Deploy Umbraco to Azure Linux
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "TMMOnline.Web/**"
+      - ".github/workflows/azure-linux-webapp.yml"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  PROJECT_PATH: TMMOnline.Web
+  IMAGE_NAME: tmmonline-web
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Build and push image to ACR
+        id: acrbuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_SHA::12}"
+          az acr build \
+            --registry "${{ vars.ACR_NAME }}" \
+            --image "${IMAGE_NAME}:${TAG}" \
+            --file "${PROJECT_PATH}/Dockerfile" \
+            "${PROJECT_PATH}"
+
+          LOGIN_SERVER=$(az acr show --name "${{ vars.ACR_NAME }}" --query loginServer -o tsv)
+          echo "image=${LOGIN_SERVER}/${IMAGE_NAME}:${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Configure web app container
+        shell: bash
+        run: |
+          set -euo pipefail
+          az webapp config container set \
+            --name "${{ vars.AZURE_WEBAPP_NAME }}" \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --container-image-name "${{ steps.acrbuild.outputs.image }}" \
+            --container-registry-url "https://${{ vars.ACR_LOGIN_SERVER }}" \
+            --container-registry-user "${{ secrets.ACR_USERNAME }}" \
+            --container-registry-password "${{ secrets.ACR_PASSWORD }}"
+
+      - name: Apply required app settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          az webapp config appsettings set \
+            --name "${{ vars.AZURE_WEBAPP_NAME }}" \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --settings \
+              ASPNETCORE_ENVIRONMENT=Production \
+              WEBSITES_PORT=8080 \
+              ConnectionStrings__umbracoDbDSN="${{ secrets.UMBRACO_DB_DSN }}" \
+              ConnectionStrings__umbracoDbDSN_ProviderName=Microsoft.Data.SqlClient
+
+      - name: Restart web app
+        run: |
+          az webapp restart \
+            --name "${{ vars.AZURE_WEBAPP_NAME }}" \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}"

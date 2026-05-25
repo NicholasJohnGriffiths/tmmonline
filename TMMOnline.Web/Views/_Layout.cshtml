@@ -1,0 +1,28 @@
+@inherits UmbracoViewPage
+@{
+    Layout = null;
+    var siteName = Model.Root()?.Name ?? "TMMOnline";
+    var pageTitle = string.IsNullOrWhiteSpace(Model.Name) ? siteName : $"{Model.Name} | {siteName}";
+    var metaDescription = Model.Value<string>("metaDescription") ?? "Transport and traffic management content";
+}
+<!doctype html>
+<html lang="en-NZ">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>@pageTitle</title>
+    <meta name="description" content="@metaDescription" />
+    <link rel="stylesheet" href="~/css/site.css" />
+</head>
+<body>
+    @await Html.PartialAsync("Partials/Site/Header")
+
+    <main class="container">
+        @RenderBody()
+    </main>
+
+    @await Html.PartialAsync("Partials/Site/Footer")
+
+    <script src="~/js/site.js"></script>
+</body>
+</html>

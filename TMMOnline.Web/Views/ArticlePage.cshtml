@@ -1,0 +1,17 @@
+@inherits UmbracoViewPage
+@{
+    Layout = "_Layout.cshtml";
+    var publishedOn = Model.Value<DateTime?>("publishedOn");
+}
+
+<article class="article-page">
+    <header>
+        <h1>@Model.Name</h1>
+        @if (publishedOn.HasValue)
+        {
+            <p class="meta">Published @publishedOn.Value.ToString("dd MMM yyyy")</p>
+        }
+    </header>
+
+    @await Html.PartialAsync("Partials/Site/ContentBlocks", Model)
+</article>
