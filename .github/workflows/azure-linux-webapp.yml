@@ -41,7 +41,7 @@ jobs:
           az acr build \
             --registry "${{ vars.ACR_NAME }}" \
             --image "${IMAGE_NAME}:${TAG}" \
-            --file "Dockerfile" \
+            --file "${PROJECT_PATH}/Dockerfile" \
             "${PROJECT_PATH}"
 
           LOGIN_SERVER=$(az acr show --name "${{ vars.ACR_NAME }}" --query loginServer -o tsv)
