@@ -43,7 +43,7 @@ catch {
 }
 
 $federatedName = "github-$GithubOrg-$GithubRepo-$Branch"
-$federatedSubject = "repo:$GithubOrg/$GithubRepo:ref:refs/heads/$Branch"
+$federatedSubject = "repo:${GithubOrg}/${GithubRepo}:ref:refs/heads/${Branch}"
 
 Write-Host "Creating or updating federated credential..."
 $payload = @{
