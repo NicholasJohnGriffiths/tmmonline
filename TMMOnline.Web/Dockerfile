@@ -2,6 +2,7 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
 COPY ["TMMOnline.Web.csproj", "./"]
+COPY ["Directory.Packages.props", "./"]
 RUN dotnet restore "TMMOnline.Web.csproj"
 
 COPY . .
