@@ -1,0 +1,12 @@
+{
+  "type": "documentType",
+  "name": "Article Page",
+  "alias": "articlePage",
+  "template": "ArticlePage",
+  "defaultTemplate": "ArticlePage",
+  "isElement": false,
+  "isContainer": false,
+  "allowedAsRoot": false,
+  "compositions": ["pageSeo", "pageContent"],
+  "allowedChildren": []
+}

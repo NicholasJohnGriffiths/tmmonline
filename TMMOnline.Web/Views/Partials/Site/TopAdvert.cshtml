@@ -1,0 +1,155 @@
+@using Umbraco.Cms.Core.Models
+@using Umbraco.Cms.Core.Models.PublishedContent
+@inherits UmbracoViewPage
+@{
+    const string RemoteMediaHost = "https://tmmonline-web.azurewebsites.net";
+
+    var mediaRoots = Umbraco.MediaAtRoot()?.ToArray() ?? Array.Empty<IPublishedContent>();
+    var allMediaFolders = mediaRoots
+        .SelectMany(root => root.DescendantsOrSelf())
+        .Where(x => x.ContentType.Alias.Equals("Folder", StringComparison.OrdinalIgnoreCase))
+        .ToArray();
+
+    IPublishedContent? advertsFolder = allMediaFolders
+        .FirstOrDefault(x => x.Name.Equals("adverts", StringComparison.OrdinalIgnoreCase));
+
+    IPublishedContent? topFolder = advertsFolder?
+        .Children()?
+        .FirstOrDefault(x => x.Name.Equals("top", StringComparison.OrdinalIgnoreCase));
+
+    bool IsImageUrl(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return false;
+        }
+
+        string normalizedUrl = url;
+        int queryIndex = normalizedUrl.IndexOf('?', StringComparison.Ordinal);
+        if (queryIndex >= 0)
+        {
+            normalizedUrl = normalizedUrl.Substring(0, queryIndex);
+        }
+
+        return normalizedUrl.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase)
+            || normalizedUrl.EndsWith(".jpeg", StringComparison.OrdinalIgnoreCase)
+            || normalizedUrl.EndsWith(".png", StringComparison.OrdinalIgnoreCase)
+            || normalizedUrl.EndsWith(".webp", StringComparison.OrdinalIgnoreCase)
+            || normalizedUrl.EndsWith(".gif", StringComparison.OrdinalIgnoreCase)
+            || normalizedUrl.EndsWith(".svg", StringComparison.OrdinalIgnoreCase);
+    }
+
+    bool IsSafeHref(string? href)
+    {
+        if (string.IsNullOrWhiteSpace(href))
+        {
+            return false;
+        }
+
+        return href.StartsWith("/", StringComparison.Ordinal)
+            || href.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || href.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+            || href.StartsWith("mailto:", StringComparison.OrdinalIgnoreCase)
+            || href.StartsWith("tel:", StringComparison.OrdinalIgnoreCase);
+    }
+
+    string? ResolveAdvertImageUrl(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return url;
+        }
+
+        bool isLocalhost = Context.Request.Host.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase);
+        if (isLocalhost && url.StartsWith("/media/", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"{RemoteMediaHost}{url}";
+        }
+
+        return url;
+    }
+
+    string? ResolveAdvertLink(IPublishedContent mediaItem)
+    {
+        string[] linkAliases =
+        {
+            "advertLink",
+            "link",
+            "externalLink",
+            "destinationUrl",
+            "targetUrl",
+            "url"
+        };
+
+        foreach (var alias in linkAliases)
+        {
+            if (!mediaItem.HasValue(alias))
+            {
+                continue;
+            }
+
+            Link? umbracoLink = mediaItem.Value<Link>(alias);
+            if (umbracoLink != null && IsSafeHref(umbracoLink.Url))
+            {
+                return umbracoLink.Url;
+            }
+
+            IPublishedContent? linkedContent = mediaItem.Value<IPublishedContent>(alias);
+            if (linkedContent != null)
+            {
+                string contentUrl = linkedContent.Url();
+                if (IsSafeHref(contentUrl))
+                {
+                    return contentUrl;
+                }
+            }
+
+            string? raw = mediaItem.Value<string>(alias);
+            if (IsSafeHref(raw))
+            {
+                return raw;
+            }
+        }
+
+        return null;
+    }
+
+    var ads = topFolder?
+        .DescendantsOrSelf()
+        .Select(x => new
+        {
+            MediaAlias = x.ContentType.Alias,
+            ImageUrl = ResolveAdvertImageUrl(x.Url()),
+            Alt = string.IsNullOrWhiteSpace(x.Name) ? "Top advert" : x.Name,
+            Href = ResolveAdvertLink(x)
+        })
+        .Where(x => !x.MediaAlias.Equals("Folder", StringComparison.OrdinalIgnoreCase) && IsImageUrl(x.ImageUrl))
+        .DistinctBy(x => x.ImageUrl, StringComparer.OrdinalIgnoreCase)
+        .ToArray()
+        ?? Array.Empty<dynamic>();
+}
+
+@if (ads.Length > 0)
+{
+    <section class="top-advert" aria-label="Top adverts">
+        <div class="top-advert-inner" data-top-ad-rotator="true" data-rotate-ms="10000">
+            @for (int i = 0; i < ads.Length; i++)
+            {
+                var ad = ads[i];
+                string stateClass = i == 0 ? "is-active" : string.Empty;
+                <figure class="top-advert-item @stateClass" data-top-ad-item="true" aria-hidden="@(i == 0 ? "false" : "true")">
+                    @if (!string.IsNullOrWhiteSpace(ad.Href))
+                    {
+                        <a class="top-advert-link" href="@ad.Href">
+                            <img src="@ad.ImageUrl" alt="@ad.Alt" loading="lazy" />
+                        </a>
+                    }
+                    else
+                    {
+                        <img src="@ad.ImageUrl" alt="@ad.Alt" loading="lazy" />
+                    }
+                </figure>
+            }
+        </div>
+    </section>
+}

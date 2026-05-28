@@ -1,0 +1,30 @@
+{
+  "type": "composition",
+  "name": "Page SEO",
+  "alias": "pageSeo",
+  "groups": [
+    {
+      "name": "SEO",
+      "properties": [
+        {
+          "alias": "metaDescription",
+          "name": "Meta Description",
+          "editor": "Textstring",
+          "mandatory": false
+        },
+        {
+          "alias": "metaTitle",
+          "name": "Meta Title",
+          "editor": "Textstring",
+          "mandatory": false
+        },
+        {
+          "alias": "hideInNavigation",
+          "name": "Hide in Navigation",
+          "editor": "Checkbox",
+          "mandatory": false
+        }
+      ]
+    }
+  ]
+}

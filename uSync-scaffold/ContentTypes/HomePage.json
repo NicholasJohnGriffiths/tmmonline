@@ -1,0 +1,12 @@
+{
+  "type": "documentType",
+  "name": "Home Page",
+  "alias": "homePage",
+  "template": "HomePage",
+  "defaultTemplate": "HomePage",
+  "isElement": false,
+  "isContainer": true,
+  "allowedAsRoot": true,
+  "compositions": ["pageSeo", "pageContent"],
+  "allowedChildren": ["sectionPage", "articlePage"]
+}

@@ -1,19 +1,156 @@
+@using Umbraco.Cms.Core.Models
+@using System.Text.RegularExpressions
 @inherits UmbracoViewPage
 @{
     var home = Model.Root();
-    var navItems = home?.Children()?.Where(x => x.IsVisible()) ?? Enumerable.Empty<IPublishedContent>();
+    var navItems = home?.Children()?
+        .Where(x => x.IsVisible())
+        .Where(x => x.Name.Equals("Primary Image Routing Test", StringComparison.OrdinalIgnoreCase) == false)
+        .ToArray() ?? Array.Empty<IPublishedContent>();
+    var today = DateTime.Now.ToString("dddd, dd MMMM yyyy");
+    IPublishedContent? bannerImage = home?.Value<IPublishedContent>("headerBannerImage")
+        ?? home?.Value<IPublishedContent>("heroImage")
+        ?? home?.Value<IPublishedContent>("primaryImage");
+    MediaWithCrops? bannerWithCrops = home?.Value<MediaWithCrops>("headerBannerImage")
+        ?? home?.Value<MediaWithCrops>("heroImage")
+        ?? home?.Value<MediaWithCrops>("primaryImage");
+    string? bannerUrl = bannerImage?.Url() ?? bannerWithCrops?.Url();
+    string bannerAlt = bannerImage?.Name ?? home?.Name ?? "TMM Online";
+
+    var preferredOrder = new[]
+    {
+        "news",
+        "rates",
+        "people",
+        "conference",
+        "property-news",
+        "news-bites",
+        "video",
+        "podcast"
+    };
+
+    var preferredLabels = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["news"] = "News",
+        ["rates"] = "Rates",
+        ["people"] = "People",
+        ["conference"] = "Conference",
+        ["property-news"] = "Property News",
+        ["news-bites"] = "News Bites",
+        ["video"] = "Video",
+        ["podcast"] = "Podcast"
+    };
+
+    string NormalizeKey(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        return value.Trim().ToLowerInvariant().Replace(" ", "-");
+    }
+
+    int SortIndex(IPublishedContent node)
+    {
+        string key = NormalizeKey(node.Name);
+        int index = Array.FindIndex(preferredOrder, x => x.Equals(key, StringComparison.OrdinalIgnoreCase));
+        return index >= 0 ? index : int.MaxValue;
+    }
+
+    string DisplayLabel(IPublishedContent node)
+    {
+        string key = NormalizeKey(node.Name);
+        if (preferredLabels.TryGetValue(key, out string? label))
+        {
+            return label;
+        }
+
+        return node.Name;
+    }
+
+    string ResolveNavUrl(IPublishedContent node)
+    {
+        string? url = node.Url();
+        bool hasConcreteUrl = string.IsNullOrWhiteSpace(url) == false
+            && url != "/"
+            && url.Contains("?node=", StringComparison.OrdinalIgnoreCase) == false;
+
+        if (hasConcreteUrl)
+        {
+            return url;
+        }
+
+        string slug = ToSlug(node.Name);
+        return string.IsNullOrWhiteSpace(slug) ? $"/?node={node.Id}" : $"/{slug}";
+    }
+
+    string ToSlug(string? value)
+    {
+        string normalized = (value ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalized.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        normalized = Regex.Replace(normalized, "[^a-z0-9]+", "-");
+        normalized = Regex.Replace(normalized, "-+", "-").Trim('-');
+        return normalized;
+    }
+
+    var orderedNavItems = navItems
+        .OrderBy(SortIndex)
+        .ThenBy(x => x.SortOrder)
+        .ThenBy(x => x.Name)
+        .ToArray();
 }
 
 <header class="site-header">
-    <div class="container header-inner">
-        <a class="brand" href="@home?.Url()">@home?.Name</a>
-        <nav aria-label="Main navigation">
-            <ul>
-                @foreach (var item in navItems)
-                {
-                    <li><a href="@item.Url()">@item.Name</a></li>
-                }
-            </ul>
-        </nav>
+    <div class="utility-bar">
+        <div class="container utility-inner">
+            <p class="utility-date">@today</p>
+            <div class="utility-meta">
+                <p class="utility-message">Mortgage adviser news, market intelligence and rates coverage.</p>
+                <nav aria-label="Utility navigation" class="utility-links">
+                    <a href="/search">Search</a>
+                    <a href="/newsletter-signup">Newsletter</a>
+                </nav>
+            </div>
+        </div>
+    </div>
+
+    <div class="container masthead">
+        <a class="brand" href="@home?.Url()">
+            <span class="brand-kicker">TMM Online</span>
+            @if (string.IsNullOrWhiteSpace(bannerUrl))
+            {
+                <span class="brand-title">@home?.Name</span>
+                <span class="brand-tagline">News, people, property and KiwiSaver coverage for the mortgage market.</span>
+            }
+        </a>
+
+        @if (string.IsNullOrWhiteSpace(bannerUrl) == false)
+        {
+            <a href="@(home?.Url() ?? "/")" aria-label="Go to home page">
+                <figure class="site-header-banner">
+                    <img src="@bannerUrl" alt="@bannerAlt" loading="lazy" />
+                </figure>
+            </a>
+            <p class="brand-tagline">News, people, property and KiwiSaver coverage for the mortgage market.</p>
+        }
+    </div>
+
+    <div class="menu-bar">
+        <div class="container menu-inner">
+            <nav aria-label="Main navigation" class="main-nav">
+                <ul>
+                    <li><a href="@(home?.Url() ?? "/")">Home</a></li>
+                    @foreach (var item in orderedNavItems)
+                    {
+                        <li><a href="@ResolveNavUrl(item)">@DisplayLabel(item)</a></li>
+                    }
+                </ul>
+            </nav>
+        </div>
     </div>
 </header>

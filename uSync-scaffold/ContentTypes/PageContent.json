@@ -1,0 +1,48 @@
+{
+  "type": "composition",
+  "name": "Page Content",
+  "alias": "pageContent",
+  "groups": [
+    {
+      "name": "Content",
+      "properties": [
+        {
+          "alias": "heroHeading",
+          "name": "Hero Heading",
+          "editor": "Textstring",
+          "mandatory": false
+        },
+        {
+          "alias": "introText",
+          "name": "Intro Text",
+          "editor": "Textarea",
+          "mandatory": false
+        },
+        {
+          "alias": "leadText",
+          "name": "Lead Text",
+          "editor": "Textstring",
+          "mandatory": false
+        },
+        {
+          "alias": "bodyText",
+          "name": "Body Text",
+          "editor": "Rich Text Editor",
+          "mandatory": false
+        },
+        {
+          "alias": "contentBlocks",
+          "name": "Content Blocks",
+          "editor": "Block List",
+          "mandatory": false
+        },
+        {
+          "alias": "publishedOn",
+          "name": "Published On",
+          "editor": "Date Picker",
+          "mandatory": false
+        }
+      ]
+    }
+  ]
+}

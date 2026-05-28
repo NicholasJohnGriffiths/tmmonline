@@ -1,13 +1,1318 @@
+﻿@using TMMOnline.Web.Tagging
+@using Umbraco.Cms.Core.Models
+@using Umbraco.Cms.Core.Models.PublishedContent
+@using System.Globalization
+@using System.Net.Http
+@using System.Net
+@using System.Text
+@using System.Text.RegularExpressions
 @inherits UmbracoViewPage
 @{
     Layout = "_Layout.cshtml";
     var heading = Model.Value<string>("heroHeading") ?? Model.Name;
-    var intro = Model.Value<string>("introText") ?? "Welcome to TMMOnline.";
+    var intro = Model.Value<string>("introText") ?? "Independent mortgage-market news, people updates and property coverage.";
+    string? requestedNode = Context.Request.Query["node"].FirstOrDefault();
+    IPublishedContent? selectedNode = null;
+    if (int.TryParse(requestedNode, out int selectedNodeId))
+    {
+        selectedNode = Umbraco.Content(selectedNodeId);
+    }
+
+    var sectionPriority = new[]
+    {
+        "people",
+        "video",
+        "podcast",
+        "property-news",
+        "news-bites",
+        "rates",
+        "conference",
+        "news"
+    };
+    var sectionAliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["videos"] = "video",
+        ["video"] = "video",
+        ["podcasts"] = "podcast",
+        ["podcast"] = "podcast",
+        ["property"] = "property-news",
+        ["propertynews"] = "property-news",
+        ["property-news"] = "property-news",
+        ["newsbites"] = "news-bites",
+        ["news-bites"] = "news-bites",
+        ["people"] = "people",
+        ["rates"] = "rates",
+        ["conference"] = "conference",
+        ["news"] = "news"
+    };
+
+    var allArticles = Model.Root()
+        .DescendantsOfType("articlePage")
+        .OrderByDescending(x => x.Value<DateTime?>("publishedOn") ?? DateTime.MinValue)
+        .ThenByDescending(x => x.CreateDate)
+        .ToArray();
+    var featuredArticle = allArticles.FirstOrDefault();
+    var leadArticles = allArticles.Skip(1).Take(4).ToArray();
+    var mostReadArticles = allArticles.Take(5).ToArray();
+    var sectionPages = Model.Root().Children()
+        .Where(x => x.IsVisible())
+        .Where(x => x.Name.Equals("Primary Image Routing Test", StringComparison.OrdinalIgnoreCase) == false)
+        .Take(4)
+        .ToArray();
+    var ratesSection = Model.Root().Children().FirstOrDefault(x => x.Name.Contains("rates", StringComparison.OrdinalIgnoreCase));
+    var rateRows = new[]
+    {
+        (Label: "Unity First Home Buyer special", Rate: "4.09%"),
+        (Label: "SBS FirstHome Combo", Rate: "4.19%"),
+        (Label: "ICBC", Rate: "4.49%"),
+        (Label: "Co-operative Bank - First Home Special", Rate: "4.55%"),
+        (Label: "Kainga Ora", Rate: "4.59%")
+    };
+
+    string ResolveContentUrl(IPublishedContent node)
+    {
+        string? url = node.Url();
+        if (string.IsNullOrWhiteSpace(url) == false && url != "/")
+        {
+            return url;
+        }
+
+        return $"/?node={node.Id}";
+    }
+
+    DateTime? NormalizeDisplayPublishedOn(DateTime? value)
+    {
+        if (value.HasValue == false)
+        {
+            return null;
+        }
+
+        return value.Value.Year <= 1900 ? null : value;
+    }
+
+    IReadOnlyList<IPublishedContent> GetSectionArticles(IPublishedContent sectionNode)
+    {
+        string sectionKey = ResolveSectionKey(sectionNode);
+
+        return DeduplicateArticles(allArticles)
+            .Where(article => string.Equals(ResolveOwnerSectionKey(article), sectionKey, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(x => x.Value<DateTime?>("publishedOn") ?? DateTime.MinValue)
+            .ThenByDescending(x => x.CreateDate)
+            .Take(3)
+            .ToArray();
+    }
+
+    IReadOnlyList<IPublishedContent> GetAllSectionArticles(IPublishedContent sectionNode)
+    {
+        string sectionKey = ResolveSectionKey(sectionNode);
+
+        return DeduplicateArticles(allArticles)
+            .Where(article => string.Equals(ResolveOwnerSectionKey(article), sectionKey, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(x => x.Value<DateTime?>("publishedOn") ?? DateTime.MinValue)
+            .ThenByDescending(x => x.CreateDate)
+            .ToArray();
+    }
+
+    string BuildArticleIdentityKey(IPublishedContent article)
+    {
+        string legacySource = article.Value<string>("legacySourceUrl")?.Trim() ?? string.Empty;
+        string title = article.Name?.Trim() ?? string.Empty;
+        DateTime publishedOn = article.Value<DateTime?>("publishedOn") ?? DateTime.MinValue;
+
+        return string.IsNullOrWhiteSpace(legacySource) == false
+            ? $"legacy:{legacySource.ToLowerInvariant()}"
+            : $"title:{title.ToLowerInvariant()}|published:{publishedOn:O}";
+    }
+
+    string NormalizeSlug(string? raw)
+    {
+        string value = (raw ?? string.Empty).Trim().ToLowerInvariant();
+        if (value.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        value = Regex.Replace(value, "[^a-z0-9]+", "-");
+        return Regex.Replace(value, "-+", "-").Trim('-');
+    }
+
+    string? MapToSectionKey(string? raw)
+    {
+        string normalized = NormalizeSlug(raw);
+        if (normalized.Length == 0)
+        {
+            return null;
+        }
+
+        if (sectionAliases.TryGetValue(normalized, out string mapped))
+        {
+            return mapped;
+        }
+
+        return sectionPriority.Contains(normalized, StringComparer.OrdinalIgnoreCase)
+            ? normalized
+            : null;
+    }
+
+    string ResolveSectionKey(IPublishedContent sectionNode)
+    {
+        var candidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (string tag in ContentTagParser.ParseTags(sectionNode.Value<string>("sectionTags")))
+        {
+            string? mappedTag = MapToSectionKey(tag);
+            if (mappedTag != null)
+            {
+                candidates.Add(mappedTag);
+            }
+        }
+
+        string? mappedName = MapToSectionKey(sectionNode.Name);
+        if (mappedName != null)
+        {
+            candidates.Add(mappedName);
+        }
+
+        string? mappedSlug = MapToSectionKey(sectionNode.UrlSegment);
+        if (mappedSlug != null)
+        {
+            candidates.Add(mappedSlug);
+        }
+
+        foreach (string key in sectionPriority)
+        {
+            if (candidates.Contains(key))
+            {
+                return key;
+            }
+        }
+
+        return mappedName ?? "news";
+    }
+
+    string ResolveOwnerSectionKey(IPublishedContent article)
+    {
+        var articleSectionCandidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string tag in ContentTagParser.ParseTags(article.Value<string>("articleTags")))
+        {
+            string? mappedTag = MapToSectionKey(tag);
+            if (mappedTag != null)
+            {
+                articleSectionCandidates.Add(mappedTag);
+            }
+        }
+
+        string legacySource = article.Value<string>("legacySourceUrl")?.Trim() ?? string.Empty;
+        bool hasExplicitVideoSource = legacySource.Contains("/video", StringComparison.OrdinalIgnoreCase);
+
+        IPublishedContent? parentSection = article
+            .AncestorsOrSelf()
+            .FirstOrDefault(x => x.ContentType.Alias.Equals("sectionPage", StringComparison.OrdinalIgnoreCase));
+        string? parentSectionKey = parentSection != null ? ResolveSectionKey(parentSection) : null;
+
+        foreach (string key in sectionPriority)
+        {
+            if (key.Equals("video", StringComparison.OrdinalIgnoreCase)
+                && hasExplicitVideoSource == false
+                && string.Equals(parentSectionKey, "video", StringComparison.OrdinalIgnoreCase) == false)
+            {
+                continue;
+            }
+
+            if (articleSectionCandidates.Contains(key))
+            {
+                return key;
+            }
+        }
+
+        return parentSectionKey != null
+            ? parentSectionKey
+            : "news";
+    }
+
+    IEnumerable<IPublishedContent> DeduplicateArticles(IEnumerable<IPublishedContent> candidates)
+    {
+        var seenLegacy = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var seenTitleDate = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        string NormalizeLegacySource(string? raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return string.Empty;
+            }
+
+            string normalized = raw.Trim();
+            int queryIndex = normalized.IndexOfAny(new[] { '?', '#' });
+            if (queryIndex >= 0)
+            {
+                normalized = normalized[..queryIndex];
+            }
+
+            return normalized.TrimEnd('/').ToLowerInvariant();
+        }
+
+        string NormalizeTitleForDedup(string? raw)
+        {
+            string title = (raw ?? string.Empty).Trim();
+            return Regex.Replace(title, "\\s*\\(\\d+\\)\\s*$", string.Empty).Trim().ToLowerInvariant();
+        }
+
+        foreach (IPublishedContent candidate in candidates)
+        {
+            string legacyKey = NormalizeLegacySource(candidate.Value<string>("legacySourceUrl"));
+            string titleKey = $"{NormalizeTitleForDedup(candidate.Name)}|published:{(candidate.Value<DateTime?>("publishedOn") ?? DateTime.MinValue):yyyy-MM-dd}";
+
+            bool isDuplicate =
+                (string.IsNullOrWhiteSpace(legacyKey) == false && seenLegacy.Contains(legacyKey))
+                || seenTitleDate.Contains(titleKey);
+
+            if (isDuplicate)
+            {
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(legacyKey) == false)
+            {
+                seenLegacy.Add(legacyKey);
+            }
+
+            seenTitleDate.Add(titleKey);
+            yield return candidate;
+        }
+    }
+
+    int ParsePageNumber(string? rawPage)
+    {
+        return int.TryParse(rawPage, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsedPage) && parsedPage > 0
+            ? parsedPage
+            : 1;
+    }
+
+    IReadOnlyList<int?> BuildVisiblePageItems(int page, int pageCount)
+    {
+        if (pageCount <= 7)
+        {
+            return Enumerable.Range(1, pageCount).Select(x => (int?)x).ToArray();
+        }
+
+        var pages = new SortedSet<int>
+        {
+            1,
+            pageCount,
+            Math.Max(1, page - 1),
+            page,
+            Math.Min(pageCount, page + 1)
+        };
+
+        var items = new List<int?>();
+        int previous = 0;
+        foreach (int p in pages)
+        {
+            if (previous != 0 && p - previous > 1)
+            {
+                items.Add(null);
+            }
+
+            items.Add(p);
+            previous = p;
+        }
+
+        return items;
+    }
+
+    string BuildPageUrl(int targetPage)
+    {
+        string path = Context.Request.Path.HasValue ? Context.Request.Path.Value! : "/";
+        var queryParts = new List<string>();
+
+        foreach (var pair in Context.Request.Query)
+        {
+            if (string.Equals(pair.Key, "page", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            string? value = pair.Value.FirstOrDefault();
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                continue;
+            }
+
+            queryParts.Add($"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(value)}");
+        }
+
+        if (targetPage > 1)
+        {
+            queryParts.Add($"page={targetPage.ToString(CultureInfo.InvariantCulture)}");
+        }
+
+        return queryParts.Count > 0
+            ? $"{path}?{string.Join("&", queryParts)}"
+            : path;
+    }
+
+    string? GetPrimaryImageUrl(IPublishedContent article)
+    {
+        IPublishedContent? primaryImage = article.Value<IPublishedContent>("primaryImage");
+        MediaWithCrops? imageWithCrops = article.Value<MediaWithCrops>("primaryImage");
+        string? imageUrl = primaryImage?.Url() ?? imageWithCrops?.Url();
+        if (string.IsNullOrWhiteSpace(imageUrl))
+        {
+            return null;
+        }
+
+        return imageUrl.EndsWith(".gif", StringComparison.OrdinalIgnoreCase)
+            ? null
+            : imageUrl;
+    }
+
+    bool IsRatesSection(IPublishedContent sectionNode)
+    {
+        if (sectionNode.ContentType.Alias.Equals("sectionPage", StringComparison.OrdinalIgnoreCase) == false)
+        {
+            return false;
+        }
+
+        if (sectionNode.Name.Contains("rates", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var tags = ContentTagParser.ParseTags(sectionNode.Value<string>("sectionTags"));
+        return tags.Contains("rates", StringComparer.OrdinalIgnoreCase);
+    }
+
+    bool IsConferenceSection(IPublishedContent sectionNode)
+    {
+        if (sectionNode.ContentType.Alias.Equals("sectionPage", StringComparison.OrdinalIgnoreCase) == false)
+        {
+            return false;
+        }
+
+        if (sectionNode.Name.Contains("conference", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var tags = ContentTagParser.ParseTags(sectionNode.Value<string>("sectionTags"));
+        return tags.Contains("conference", StringComparer.OrdinalIgnoreCase);
+    }
+
+    string NormalizeConferenceProgrammeHtml(string? rawHtml)
+    {
+        if (string.IsNullOrWhiteSpace(rawHtml))
+        {
+            return string.Empty;
+        }
+
+        string html = rawHtml;
+        Match programmeStart = Regex.Match(
+            html,
+            "(?<value><h1[^>]*>\\s*Better\\s+Business\\s+Programme\\s*</h1>.*)",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        if (programmeStart.Success)
+        {
+            html = programmeStart.Groups["value"].Value;
+        }
+
+        MatchCollection tables = Regex.Matches(html, "<table\\b[^>]*>.*?</table>", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        if (tables.Count > 1)
+        {
+            var seenTables = new HashSet<string>(StringComparer.Ordinal);
+            var builder = new StringBuilder(html.Length);
+            int cursor = 0;
+
+            foreach (Match table in tables.Cast<Match>())
+            {
+                if (table.Index > cursor)
+                {
+                    builder.Append(html, cursor, table.Index - cursor);
+                }
+
+                string canonical = Regex.Replace(table.Value, "\\s+", " ").Trim();
+                if (seenTables.Add(canonical))
+                {
+                    builder.Append(table.Value);
+                }
+
+                cursor = table.Index + table.Length;
+            }
+
+            if (cursor < html.Length)
+            {
+                builder.Append(html, cursor, html.Length - cursor);
+            }
+
+            html = builder.ToString();
+        }
+
+        html = Regex.Replace(
+            html,
+            "<h3[^>]*>\\s*(?:&nbsp;)?\\s*</h3>",
+            string.Empty,
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        html = Regex.Replace(
+            html,
+            "<h3[^>]*>.*?update on speakers.*?details.*?here.*?</h3>",
+            string.Empty,
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        html = Regex.Replace(
+            html,
+            "<p[^>]*>\\s*(?:&nbsp;)?\\s*</p>",
+            string.Empty,
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+        string[] footerMarkers =
+        {
+            "About Us",
+            "Our Network",
+            "TMM - The Mortgage Mag is 100% dedicated",
+            "Tarawera Publishing Ltd"
+        };
+
+        int trimIndex = -1;
+        foreach (string marker in footerMarkers)
+        {
+            int markerIndex = html.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+            if (markerIndex >= 0 && (trimIndex < 0 || markerIndex < trimIndex))
+            {
+                trimIndex = markerIndex;
+            }
+        }
+
+        if (trimIndex >= 0)
+        {
+            int tagStart = html.LastIndexOf('<', trimIndex);
+            html = (tagStart > 0 ? html[..tagStart] : html[..trimIndex]).Trim();
+        }
+
+        int sidebarCommentIndex = html.IndexOf("<!-- Sidebar -->", StringComparison.OrdinalIgnoreCase);
+        if (sidebarCommentIndex >= 0)
+        {
+            html = html[..sidebarCommentIndex].Trim();
+        }
+
+        int sideRailIndex = html.IndexOf("side-rail", StringComparison.OrdinalIgnoreCase);
+        if (sideRailIndex >= 0)
+        {
+            int tagStart = html.LastIndexOf('<', sideRailIndex);
+            html = (tagStart > 0 ? html[..tagStart] : html[..sideRailIndex]).Trim();
+        }
+
+        html = Regex.Replace(html, "<footer\\b[^>]*>.*?</footer>", string.Empty, RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        html = BuildConferenceCalendarHtml(html);
+        return html.Trim();
+    }
+
+    string? TryLoadLegacyConferenceHtml()
+    {
+        const string legacyConferenceUrl = "https://tmmonline.nz/better-business";
+
+        try
+        {
+            using var handler = new HttpClientHandler();
+            handler.ServerCertificateCustomValidationCallback = static (_, _, _, _) => true;
+            using var httpClient = new HttpClient(handler);
+            string html = httpClient.GetStringAsync(legacyConferenceUrl).GetAwaiter().GetResult();
+
+            Match programmeStart = Regex.Match(
+                html,
+                "(?<value><h1[^>]*>\\s*Better\\s+Business\\s+Programme\\s*</h1>.*)",
+                RegexOptions.IgnoreCase | RegexOptions.Singleline);
+            if (programmeStart.Success)
+            {
+                html = programmeStart.Groups["value"].Value;
+            }
+
+            int trimIndex = html.IndexOf("About Us", StringComparison.OrdinalIgnoreCase);
+            if (trimIndex >= 0)
+            {
+                int tagStart = html.LastIndexOf('<', trimIndex);
+                html = (tagStart > 0 ? html[..tagStart] : html[..trimIndex]).Trim();
+            }
+
+            return html.Trim();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    string BuildConferenceCalendarHtml(string html)
+    {
+        if (string.IsNullOrWhiteSpace(html))
+        {
+            return string.Empty;
+        }
+
+        string headingHtml = Regex.Match(html, "<h1[^>]*>.*?</h1>", RegexOptions.IgnoreCase | RegexOptions.Singleline).Value;
+        string noteHtml = Regex.Match(
+            html,
+            "<p[^>]*>.*?update on speakers.*?</p>",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline).Value;
+
+        var entries = new List<(string Time, string Title, string Speaker)>();
+
+        MatchCollection rowMatches = Regex.Matches(html, "<tr\\b[^>]*>(?<row>.*?)</tr>", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        foreach (Match rowMatch in rowMatches)
+        {
+            MatchCollection cellMatches = Regex.Matches(rowMatch.Groups["row"].Value, "<t[dh][^>]*>(?<cell>.*?)</t[dh]>", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+            var cells = cellMatches
+                .Cast<Match>()
+                .Select(x => Regex.Replace(WebUtility.HtmlDecode(x.Groups["cell"].Value), "<[^>]+>", string.Empty).Trim())
+                .Where(x => string.IsNullOrWhiteSpace(x) == false && x != "\u00A0")
+                .ToArray();
+
+            if (cells.Length >= 2 && LooksLikeTime(cells[0]))
+            {
+                string speaker = cells.Length >= 3 ? cells[2] : string.Empty;
+                entries.Add((cells[0], cells[1], speaker));
+            }
+        }
+
+        if (entries.Count == 0)
+        {
+            MatchCollection headingMatches = Regex.Matches(html, "<h[3-5][^>]*>(?<value>.*?)</h[3-5]>", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+            var lines = headingMatches
+                .Cast<Match>()
+                .Select(x => Regex.Replace(WebUtility.HtmlDecode(x.Groups["value"].Value), "<[^>]+>", string.Empty).Trim())
+                .Where(x => string.IsNullOrWhiteSpace(x) == false && x != "\u00A0")
+                .ToList();
+
+            for (int i = 0; i < lines.Count; i++)
+            {
+                if (LooksLikeTime(lines[i]) == false)
+                {
+                    continue;
+                }
+
+                string time = lines[i];
+                string title = i + 1 < lines.Count ? lines[i + 1] : string.Empty;
+                string speaker = i + 2 < lines.Count && LooksLikeTime(lines[i + 2]) == false ? lines[i + 2] : string.Empty;
+
+                if (string.IsNullOrWhiteSpace(title) == false && LooksLikeTime(title) == false)
+                {
+                    entries.Add((time, title, speaker));
+                }
+            }
+        }
+
+        if (entries.Count == 0)
+        {
+            return html;
+        }
+
+        var builder = new StringBuilder();
+        if (string.IsNullOrWhiteSpace(headingHtml) == false)
+        {
+            builder.Append(headingHtml);
+        }
+
+        builder.Append("<div class=\"conference-calendar\">");
+        foreach ((string time, string title, string speaker) in entries)
+        {
+            builder.Append("<article class=\"conference-calendar-item\">");
+            builder.Append("<div class=\"conference-calendar-time\">")
+                .Append(WebUtility.HtmlEncode(time))
+                .Append("</div>");
+            builder.Append("<div class=\"conference-calendar-content\">");
+            builder.Append("<h3>")
+                .Append(WebUtility.HtmlEncode(title))
+                .Append("</h3>");
+            if (string.IsNullOrWhiteSpace(speaker) == false)
+            {
+                builder.Append("<p class=\"conference-calendar-speaker\">")
+                    .Append(WebUtility.HtmlEncode(speaker))
+                    .Append("</p>");
+            }
+            builder.Append("</div></article>");
+        }
+        builder.Append("</div>");
+
+        if (string.IsNullOrWhiteSpace(noteHtml) == false)
+        {
+            builder.Append(noteHtml);
+        }
+
+        return builder.ToString();
+    }
+
+    bool LooksLikeTime(string value)
+    {
+        return Regex.IsMatch(
+            value,
+            "\\b\\d{1,2}(?::\\d{2})?\\s*(?:am|pm)\\b|\\b\\d{1,2}(?::\\d{2})?\\s*(?:am|pm)\\s*-\\s*\\d{1,2}(?::\\d{2})?\\s*(?:am|pm)\\b",
+            RegexOptions.IgnoreCase);
+    }
 }
 
-<section class="hero">
-    <h1>@heading</h1>
-    <p>@intro</p>
-</section>
+@if (selectedNode?.ContentType.Alias.Equals("sectionPage", StringComparison.OrdinalIgnoreCase) == true)
+{
+    var sectionLead = selectedNode.Value<string>("leadText");
+    var sectionArticles = GetAllSectionArticles(selectedNode);
+    const int cardsPerRow = 3;
+    const int rowsPerPage = 3;
+    const int sectionPageSize = cardsPerRow * rowsPerPage;
+    int currentPage = ParsePageNumber(Context.Request.Query["page"].FirstOrDefault());
+    int totalPages = Math.Max(1, (int)Math.Ceiling(sectionArticles.Count / (double)sectionPageSize));
+    currentPage = Math.Clamp(currentPage, 1, totalPages);
+    var pagedArticles = sectionArticles
+        .Skip((currentPage - 1) * sectionPageSize)
+        .Take(sectionPageSize)
+        .ToArray();
+    var isConferenceSection = IsConferenceSection(selectedNode);
+    var isRatesSection = IsRatesSection(selectedNode);
+    if (isConferenceSection)
+    {
+        ViewData["HideFooter"] = true;
+    }
+
+    @await Html.PartialAsync("Partials/Site/TopAdvert", selectedNode)
+
+    <article class="content-page">
+        <header>
+            <h1>@selectedNode.Name</h1>
+            @if (!string.IsNullOrWhiteSpace(sectionLead))
+            {
+                <p class="lead">@sectionLead</p>
+            }
+        </header>
+
+        @if (isRatesSection == false)
+        {
+            @await Html.PartialAsync("Partials/Site/ContentBlocks", selectedNode)
+        }
+
+        @if (isConferenceSection)
+        {
+            IPublishedContent? conferenceArticle = sectionArticles.FirstOrDefault();
+            string? conferenceSourceHtml = conferenceArticle?.Value<string>("bodyText");
+            if (string.IsNullOrWhiteSpace(conferenceSourceHtml))
+            {
+                conferenceSourceHtml = selectedNode.Value<string>("bodyText");
+            }
+
+            if (string.IsNullOrWhiteSpace(conferenceSourceHtml))
+            {
+                conferenceSourceHtml = TryLoadLegacyConferenceHtml();
+            }
+
+            string conferenceProgrammeHtml = NormalizeConferenceProgrammeHtml(conferenceSourceHtml);
+
+            <section class="conference-programme" aria-label="Better Business Programme">
+                @if (string.IsNullOrWhiteSpace(conferenceProgrammeHtml) == false)
+                {
+                    @Html.Raw(conferenceProgrammeHtml)
+                }
+                else
+                {
+                    <p class="meta">Better Business Programme content is being prepared.</p>
+                }
+            </section>
+        }
+        else if (isRatesSection)
+        {
+            <section class="rates-live" aria-label="Latest mortgage rates">
+                <h2>Latest Mortgage Rates</h2>
+                <div class="rates-live-links" role="navigation" aria-label="Rates quick filters">
+                    <a href="https://tmmonline.nz/rates?mrt_col=rate_rc&amp;mrt_dir=asc&amp;mrt_term=rate_rc" target="_blank" rel="noopener noreferrer">Revolving Credit</a>
+                    <a href="https://tmmonline.nz/rates?mrt_offset=1" target="_blank" rel="noopener noreferrer">Offset Mortgages</a>
+                    <a href="https://tmmonline.nz/rates?mrt_special=1" target="_blank" rel="noopener noreferrer">Special Rates</a>
+                </div>
+                <div class="rates-live-embed">
+                    <iframe
+                        src="https://tmmonline.nz/rates"
+                        title="Latest Mortgage Rates"
+                        loading="lazy"
+                        referrerpolicy="no-referrer-when-downgrade"></iframe>
+                </div>
+                <p class="meta">If the live table does not load in your browser, open <a href="https://tmmonline.nz/rates" target="_blank" rel="noopener noreferrer">tmmonline.nz/rates</a>.</p>
+            </section>
+        }
+        else if (sectionArticles.Count > 0)
+        {
+            <section class="section-articles">
+                <div class="section-card-grid section-card-grid-three">
+                    @for (int i = 0; i < pagedArticles.Length; i++)
+                    {
+                        var article = pagedArticles[i];
+                        var articlePublishedOn = NormalizeDisplayPublishedOn(article.Value<DateTime?>("publishedOn"));
+                        var articleTags = ContentTagParser.ParseTags(article.Value<string>("articleTags"));
+                        var articleLead = article.Value<string>("leadText") ?? article.Value<string>("introText") ?? "Read the full story.";
+                        var articleImageUrl = GetPrimaryImageUrl(article);
+                        var articleHref = ResolveContentUrl(article);
+
+                        <article class="section-article-card">
+                            <a class="section-article-link" href="@articleHref">
+                                @if (string.IsNullOrWhiteSpace(articleImageUrl) == false)
+                                {
+                                    <img src="@articleImageUrl" alt="@article.Name" loading="lazy" />
+                                }
+                                else
+                                {
+                                    <div class="section-article-placeholder" aria-hidden="true">No Image</div>
+                                }
+                            </a>
+
+                            <div class="section-article-content">
+                                <h3><a href="@articleHref">@article.Name</a></h3>
+                                @if (!string.IsNullOrWhiteSpace(articleLead))
+                                {
+                                    <p class="section-article-excerpt">@articleLead</p>
+                                }
+                                <p class="meta">
+                            @if (articlePublishedOn.HasValue)
+                            {
+                                    <span class="meta-date">@articlePublishedOn.Value.ToString("dd MMM yyyy")</span>
+                            }
+                            @if (articleTags.Count > 0)
+                            {
+                                    <span class="meta-tags">@string.Join(", ", articleTags)</span>
+                            }
+                                </p>
+                            </div>
+                        </article>
+                    }
+                </div>
+
+                @if (totalPages > 1)
+                    {
+                    <nav class="section-pagination" aria-label="Section pages">
+                        @if (currentPage > 1)
+                        {
+                            <a class="section-pagination-link section-pagination-link-nav" href="@BuildPageUrl(currentPage - 1)" rel="prev" aria-label="Go to previous page">Previous</a>
+                        }
+                        else
+                        {
+                            <span class="section-pagination-link section-pagination-link-nav is-disabled" aria-disabled="true">Previous</span>
+                        }
+
+                        <ol class="section-pagination-pages">
+                            @foreach (int? pageItem in BuildVisiblePageItems(currentPage, totalPages))
+                            {
+                                if (pageItem.HasValue)
+                                {
+                                    int pageNumber = pageItem.Value;
+                                    bool isCurrentPage = pageNumber == currentPage;
+                                    <li>
+                                        @if (isCurrentPage)
+                                        {
+                                            <span class="section-pagination-link section-pagination-link-number is-current" aria-current="page">@(pageNumber)</span>
+                                        }
+                                        else
+                                        {
+                                            <a class="section-pagination-link section-pagination-link-number" href="@BuildPageUrl(pageNumber)" aria-label="Go to page @(pageNumber)">@(pageNumber)</a>
+                                        }
+                                    </li>
+                                }
+                                else
+                                {
+                                    <li><span class="section-pagination-ellipsis" aria-hidden="true">...</span></li>
+                                }
+                            }
+                        </ol>
+
+                        <span class="section-pagination-status">Page @currentPage of @totalPages</span>
+
+                        @if (currentPage < totalPages)
+                        {
+                            <a class="section-pagination-link section-pagination-link-nav" href="@BuildPageUrl(currentPage + 1)" rel="next" aria-label="Go to next page">Next</a>
+                        }
+                        else
+                        {
+                            <span class="section-pagination-link section-pagination-link-nav is-disabled" aria-disabled="true">Next</span>
+                        }
+                    </nav>
+                }
+            </section>
+        }
+        else
+        {
+            <section class="section-articles">
+                <p class="meta">No articles were found under this section yet.</p>
+            </section>
+        }
+    </article>
+}
+else if (selectedNode?.ContentType.Alias.Equals("articlePage", StringComparison.OrdinalIgnoreCase) == true)
+{
+    var publishedOn = NormalizeDisplayPublishedOn(selectedNode.Value<DateTime?>("publishedOn"));
+    var articleTags = ContentTagParser.ParseTags(selectedNode.Value<string>("articleTags"));
+    IPublishedContent? primaryImage = selectedNode.Value<IPublishedContent>("primaryImage");
+    MediaWithCrops? imageWithCrops = selectedNode.Value<MediaWithCrops>("primaryImage");
+    string? primaryImageUrl = primaryImage?.Url() ?? imageWithCrops?.Url();
+    int? primaryImageWidth = primaryImage?.Value<int?>("umbracoWidth");
+    int? primaryImageHeight = primaryImage?.Value<int?>("umbracoHeight");
+    if (string.IsNullOrWhiteSpace(primaryImageUrl) == false
+        && primaryImageUrl.EndsWith(".gif", StringComparison.OrdinalIgnoreCase))
+    {
+        primaryImageUrl = null;
+    }
+    if (primaryImageWidth.HasValue && primaryImageHeight.HasValue
+        && (primaryImageWidth.Value < 300 || primaryImageHeight.Value < 150))
+    {
+        primaryImageUrl = null;
+    }
+
+    bool isVideoArticle = articleTags.Contains("video", StringComparer.OrdinalIgnoreCase);
+    if (isVideoArticle)
+    {
+        primaryImageUrl = null;
+    }
+    string primaryImageAlt = primaryImage?.Name ?? selectedNode.Name;
+    string rawBodyHtml = selectedNode.Value<string>("bodyText") ?? string.Empty;
+    string bodyHtml = RemoveLeadingDuplicateHero(rawBodyHtml, primaryImageUrl, selectedNode.Name);
+
+    <article class="article-page">
+        <header>
+            <h1>@selectedNode.Name</h1>
+            @if (publishedOn.HasValue)
+            {
+                <p class="meta">Published @publishedOn.Value.ToString("dd MMM yyyy")</p>
+            }
+        </header>
+
+        @if (string.IsNullOrWhiteSpace(primaryImageUrl) == false)
+        {
+            <figure class="article-primary-image">
+                <img src="@primaryImageUrl" alt="@primaryImageAlt" loading="lazy" />
+            </figure>
+        }
+
+        @if (string.IsNullOrWhiteSpace(bodyHtml) == false)
+        {
+            <section class="rich-text">
+                @Html.Raw(bodyHtml)
+            </section>
+        }
+
+        @if (selectedNode.HasValue("contentBlocks"))
+        {
+            @await Html.GetBlockListHtmlAsync(selectedNode, "contentBlocks")
+        }
+    </article>
+}
+else
+{
+<div class="homepage-shell">
+    <div class="homepage-main-column">
+        <section class="homepage-hero">
+            <div class="hero-intro">
+                <span class="eyebrow">Legacy-inspired newsroom</span>
+                <h1>@heading</h1>
+                <p>@intro</p>
+            </div>
+
+            @if (featuredArticle != null)
+            {
+                var featuredDate = NormalizeDisplayPublishedOn(featuredArticle.Value<DateTime?>("publishedOn"));
+                var featuredLead = featuredArticle.Value<string>("leadText") ?? featuredArticle.Value<string>("introText");
+                var featuredImageUrl = GetPrimaryImageUrl(featuredArticle);
+
+                <article class="featured-story">
+                    @if (string.IsNullOrWhiteSpace(featuredImageUrl) == false)
+                    {
+                        <a class="featured-story-media" href="@ResolveContentUrl(featuredArticle)">
+                            <img src="@featuredImageUrl" alt="@featuredArticle.Name" loading="lazy" />
+                        </a>
+                    }
+                    else
+                    {
+                        <div class="featured-story-placeholder" aria-hidden="true">No Image</div>
+                    }
+                    <span class="story-label">Lead story</span>
+                    <h2><a href="@ResolveContentUrl(featuredArticle)">@featuredArticle.Name</a></h2>
+                    @if (featuredDate.HasValue)
+                    {
+                        <p class="story-date">@featuredDate.Value.ToString("dddd, dd MMMM yyyy")</p>
+                    }
+                    @if (!string.IsNullOrWhiteSpace(featuredLead))
+                    {
+                        <p>@featuredLead</p>
+                    }
+                </article>
+            }
+        </section>
+
+        @if (leadArticles.Length > 0)
+        {
+            <section class="story-grid">
+                @foreach (var article in leadArticles)
+                {
+                    var articleDate = NormalizeDisplayPublishedOn(article.Value<DateTime?>("publishedOn"));
+                    var articleImageUrl = GetPrimaryImageUrl(article);
+
+                    <article class="story-card">
+                        @if (string.IsNullOrWhiteSpace(articleImageUrl) == false)
+                        {
+                            <a class="story-card-media" href="@ResolveContentUrl(article)">
+                                <img src="@articleImageUrl" alt="@article.Name" loading="lazy" />
+                            </a>
+                        }
+                        else
+                        {
+                            <div class="story-card-placeholder" aria-hidden="true">No Image</div>
+                        }
+                        <h2><a href="@ResolveContentUrl(article)">@article.Name</a></h2>
+                        @if (articleDate.HasValue)
+                        {
+                            <p class="story-date">@articleDate.Value.ToString("dd MMM yyyy")</p>
+                        }
+                        <p>@(article.Value<string>("leadText") ?? article.Value<string>("introText") ?? "Read the full story.")</p>
+                    </article>
+                }
+            </section>
+        }
+
+        @if (sectionPages.Length > 0)
+        {
+            <section class="section-highlights">
+                @foreach (var sectionNode in sectionPages)
+                {
+                    var sectionArticles = GetSectionArticles(sectionNode);
+
+                    <article class="section-panel">
+                        <div class="section-panel-header">
+                            <h2><a href="@ResolveContentUrl(sectionNode)">@sectionNode.Name</a></h2>
+                            <a class="section-link" href="@ResolveContentUrl(sectionNode)">View section</a>
+                        </div>
+
+                        @if (sectionArticles.Count > 0)
+                        {
+                            <ul>
+                                @foreach (var article in sectionArticles)
+                                {
+                                    <li>
+                                        <a href="@ResolveContentUrl(article)">@article.Name</a>
+                                    </li>
+                                }
+                            </ul>
+                        }
+                        else
+                        {
+                            <p>No articles are assigned to this section yet.</p>
+                        }
+                    </article>
+                }
+            </section>
+        }
+    </div>
+
+    <aside class="homepage-sidebar" aria-label="Supplementary panels">
+        @if (mostReadArticles.Length > 0)
+        {
+            <section class="sidebar-panel">
+                <h2>Most Read</h2>
+                <ol>
+                    @foreach (var article in mostReadArticles)
+                    {
+                        <li><a href="@ResolveContentUrl(article)">@article.Name</a></li>
+                    }
+                </ol>
+            </section>
+        }
+
+        <section class="sidebar-panel">
+            <h2>Top Mortgage Rates</h2>
+            <table class="rates-table">
+                <tbody>
+                    @foreach (var rate in rateRows)
+                    {
+                        <tr>
+                            <th scope="row">@rate.Label</th>
+                            <td>@rate.Rate</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+
+            @if (ratesSection != null)
+            {
+                <p><a class="section-link" href="@ResolveContentUrl(ratesSection)">Full rates table</a></p>
+            }
+        </section>
+
+        <section class="sidebar-panel">
+            <h2>Quick Links</h2>
+            <ul>
+                <li><a href="/newsletter-signup">Newsletter Sign-up</a></li>
+                <li><a href="/jobs">Latest Job Listings</a></li>
+                <li><a href="/about">About TMM</a></li>
+            </ul>
+        </section>
+    </aside>
+</div>
+}
 
 @await Html.PartialAsync("Partials/Site/ContentBlocks", Model)
+
+@functions {
+    private static string RemoveLeadingDuplicateHero(string html, string? primaryImageUrl, string articleTitle)
+    {
+        if (string.IsNullOrWhiteSpace(html))
+        {
+            return html;
+        }
+
+        string trimmed = html.Trim();
+
+        trimmed = RemoveShareLinksLists(trimmed);
+        trimmed = RemoveEmptyFigures(trimmed);
+        trimmed = RemoveLeadingFigureNearTopWhenPrimaryExists(trimmed, primaryImageUrl);
+        trimmed = RemoveDuplicatePrimaryImageNearTop(trimmed, primaryImageUrl);
+
+        for (int i = 0; i < 8; i++)
+        {
+            string before = trimmed;
+
+            trimmed = RemoveLeadingShareLinksList(trimmed);
+            trimmed = RemoveLeadingEmptyFigure(trimmed);
+            trimmed = RemoveLeadingNonImageFigure(trimmed);
+            trimmed = RemoveLeadingDuplicatePrimaryImage(trimmed, primaryImageUrl);
+            trimmed = RemoveLeadingPictureCredit(trimmed);
+            trimmed = RemoveLeadingTitleEcho(trimmed, articleTitle);
+
+            if (string.Equals(before, trimmed, StringComparison.Ordinal))
+            {
+                break;
+            }
+        }
+
+        return trimmed.Trim();
+    }
+
+    private static string RemoveLeadingDuplicatePrimaryImage(string html, string? primaryImageUrl)
+    {
+        if (string.IsNullOrWhiteSpace(primaryImageUrl))
+        {
+            return html;
+        }
+
+        Match firstImage = Regex.Match(
+            html,
+            "^\\s*(?:<figure[^>]*>\\s*)?(?:<p[^>]*>\\s*)?<img[^>]*src=\"(?<src>[^\"]+)\"[^>]*>(?:\\s*</p>)?(?:\\s*<figcaption[^>]*>.*?</figcaption>)?(?:\\s*</figure>)?\\s*",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+        if (firstImage.Success == false)
+        {
+            return html;
+        }
+
+        string firstSrc = firstImage.Groups["src"].Value;
+        return UrlsMatch(firstSrc, primaryImageUrl) ? html[firstImage.Length..] : html;
+    }
+
+    private static string RemoveLeadingShareLinksList(string html)
+    {
+        Match listMatch = Regex.Match(
+            html,
+            "^\\s*<(ul|ol)[^>]*>(?<content>.*?)</\\1>\\s*",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+        if (listMatch.Success == false)
+        {
+            return html;
+        }
+
+        string listContent = listMatch.Groups["content"].Value;
+        bool isShareList = Regex.IsMatch(
+            listContent,
+            "LinkedIn|Facebook|Twitter|Mail|Comment|shareArticle|sharer\\.php|intent/tweet|mailto:",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+        return isShareList ? html[listMatch.Length..] : html;
+    }
+
+    private static string RemoveShareLinksLists(string html)
+    {
+        return Regex.Replace(
+            html,
+            "<(ul|ol)[^>]*>.*?</\\1>",
+            match =>
+            {
+                bool isShareList = Regex.IsMatch(
+                    match.Value,
+                    "LinkedIn|Facebook|Twitter|Mail|Comment|shareArticle|sharer\\.php|intent/tweet|mailto:",
+                    RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+                return isShareList ? string.Empty : match.Value;
+            },
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+    }
+
+    private static string RemoveLeadingEmptyFigure(string html)
+    {
+        Match emptyFigure = Regex.Match(
+            html,
+            "^\\s*<figure[^>]*>\\s*</figure>\\s*",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+        return emptyFigure.Success ? html[emptyFigure.Length..] : html;
+    }
+
+    private static string RemoveLeadingNonImageFigure(string html)
+    {
+        Match figure = Regex.Match(
+            html,
+            "^\\s*<figure[^>]*>(?<content>.*?)</figure>\\s*",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+        if (figure.Success == false)
+        {
+            return html;
+        }
+
+        string content = figure.Groups["content"].Value;
+        bool hasImage = Regex.IsMatch(content, "<img\\b", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        return hasImage ? html : html[figure.Length..];
+    }
+
+    private static string RemoveEmptyFigures(string html)
+    {
+        return Regex.Replace(
+            html,
+            "<figure[^>]*>\\s*</figure>",
+            string.Empty,
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+    }
+
+    private static string RemoveDuplicatePrimaryImageNearTop(string html, string? primaryImageUrl)
+    {
+        if (string.IsNullOrWhiteSpace(primaryImageUrl))
+        {
+            return html;
+        }
+
+        MatchCollection imageMatches = Regex.Matches(
+            html,
+            "(?:<figure[^>]*>\\s*)?(?:<p[^>]*>\\s*)?<img[^>]*src=\"(?<src>[^\"]+)\"[^>]*>(?:\\s*</p>)?(?:\\s*<figcaption[^>]*>.*?</figcaption>)?(?:\\s*</figure>)?",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+        foreach (Match match in imageMatches)
+        {
+            if (match.Index > 2500)
+            {
+                break;
+            }
+
+            string src = match.Groups["src"].Value;
+            string prefixText = NormalizePlainText(StripHtml(html[..match.Index]));
+            bool isLeadingImage = string.IsNullOrWhiteSpace(prefixText);
+
+            if (UrlsMatch(src, primaryImageUrl) || isLeadingImage)
+            {
+                return html.Remove(match.Index, match.Length);
+            }
+        }
+
+        return html;
+    }
+
+    private static string RemoveLeadingFigureNearTopWhenPrimaryExists(string html, string? primaryImageUrl)
+    {
+        if (string.IsNullOrWhiteSpace(primaryImageUrl))
+        {
+            return html;
+        }
+
+        MatchCollection figureMatches = Regex.Matches(
+            html,
+            "<figure[^>]*>.*?</figure>",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+        foreach (Match match in figureMatches)
+        {
+            if (match.Index > 2500)
+            {
+                break;
+            }
+
+            string prefixText = NormalizePlainText(StripHtml(html[..match.Index]));
+            if (string.IsNullOrWhiteSpace(prefixText))
+            {
+                return html.Remove(match.Index, match.Length);
+            }
+        }
+
+        return html;
+    }
+
+    private static string RemoveLeadingPictureCredit(string html)
+    {
+        Match credit = Regex.Match(
+            html,
+            "^\\s*<p[^>]*>\\s*(?:<[^>]+>\\s*)*(?:Picture|Image)\\s*:\\s*.*?</p>\\s*",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+        return credit.Success ? html[credit.Length..] : html;
+    }
+
+    private static string RemoveLeadingTitleEcho(string html, string articleTitle)
+    {
+        Match titleEcho = Regex.Match(
+            html,
+            "^\\s*<(p|div|span|strong|em)[^>]*>(?<value>.*?)</\\1>\\s*",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+        if (titleEcho.Success == false)
+        {
+            return html;
+        }
+
+        string candidate = NormalizePlainText(StripHtml(titleEcho.Groups["value"].Value));
+        string title = NormalizePlainText(articleTitle);
+        return string.IsNullOrWhiteSpace(candidate) == false && string.Equals(candidate, title, StringComparison.OrdinalIgnoreCase)
+            ? html[titleEcho.Length..]
+            : html;
+    }
+
+    private static bool UrlsMatch(string left, string right)
+    {
+        string l = NormalizeUrlForCompare(left);
+        string r = NormalizeUrlForCompare(right);
+
+        return string.IsNullOrWhiteSpace(l) == false
+            && string.IsNullOrWhiteSpace(r) == false
+            && string.Equals(l, r, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeUrlForCompare(string value)
+    {
+        string cleaned = (value ?? string.Empty).Trim();
+        if (cleaned.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        if (Uri.TryCreate(cleaned, UriKind.Absolute, out Uri? absolute))
+        {
+            cleaned = absolute.AbsolutePath;
+        }
+
+        int queryIndex = cleaned.IndexOfAny(['?', '#']);
+        if (queryIndex >= 0)
+        {
+            cleaned = cleaned[..queryIndex];
+        }
+
+        return cleaned.Trim('/').ToLowerInvariant();
+    }
+
+    private static string StripHtml(string input)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            return string.Empty;
+        }
+
+        string withoutTags = Regex.Replace(input, "<[^>]+>", string.Empty);
+        return System.Net.WebUtility.HtmlDecode(withoutTags).Trim();
+    }
+
+    private static string NormalizePlainText(string value)
+    {
+        return Regex.Replace(value ?? string.Empty, "\\s+", " ").Trim();
+    }
+}

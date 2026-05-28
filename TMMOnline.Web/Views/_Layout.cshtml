@@ -4,6 +4,11 @@
     var siteName = Model.Root()?.Name ?? "TMMOnline";
     var pageTitle = string.IsNullOrWhiteSpace(Model.Name) ? siteName : $"{Model.Name} | {siteName}";
     var metaDescription = Model.Value<string>("metaDescription") ?? "Transport and traffic management content";
+    bool hideFooterFromViewData = ViewData["HideFooter"] as bool? == true;
+    bool hideFooterForConferenceRoute =
+        Context.Request.Path.StartsWithSegments("/conference", StringComparison.OrdinalIgnoreCase)
+        || Context.Request.Path.StartsWithSegments("/better-business", StringComparison.OrdinalIgnoreCase);
+    bool hideFooter = hideFooterFromViewData || hideFooterForConferenceRoute;
 }
 <!doctype html>
 <html lang="en-NZ">
@@ -21,7 +26,10 @@
         @RenderBody()
     </main>
 
-    @await Html.PartialAsync("Partials/Site/Footer")
+    @if (!hideFooter)
+    {
+        @await Html.PartialAsync("Partials/Site/Footer")
+    }
 
     <script src="~/js/site.js"></script>
 </body>

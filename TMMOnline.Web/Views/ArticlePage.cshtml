@@ -1,7 +1,48 @@
+﻿@using TMMOnline.Web.Tagging
+@using Umbraco.Cms.Core.Models
+@using Umbraco.Cms.Core.Models.PublishedContent
+@using System.Text.RegularExpressions
 @inherits UmbracoViewPage
 @{
     Layout = "_Layout.cshtml";
-    var publishedOn = Model.Value<DateTime?>("publishedOn");
+    DateTime? publishedOn = NormalizeDisplayPublishedOn(Model.Value<DateTime?>("publishedOn"));
+
+    IPublishedContent? primaryImage = Model.Value<IPublishedContent>("primaryImage");
+    MediaWithCrops? primaryImageWithCrops = Model.Value<MediaWithCrops>("primaryImage");
+    var articleTags = ContentTagParser.ParseTags(Model.Value<string>("articleTags"));
+    private static DateTime? NormalizeDisplayPublishedOn(DateTime? value)
+    {
+        if (value.HasValue == false)
+        {
+            return null;
+        }
+
+        return value.Value.Year <= 1900 ? null : value;
+    }
+
+    string? primaryImageUrl = primaryImage?.Url() ?? primaryImageWithCrops?.Url();
+    int? primaryImageWidth = primaryImage?.Value<int?>("umbracoWidth");
+    int? primaryImageHeight = primaryImage?.Value<int?>("umbracoHeight");
+    if (string.IsNullOrWhiteSpace(primaryImageUrl) == false
+        && primaryImageUrl.EndsWith(".gif", StringComparison.OrdinalIgnoreCase))
+    {
+        primaryImageUrl = null;
+    }
+    if (primaryImageWidth.HasValue && primaryImageHeight.HasValue
+        && (primaryImageWidth.Value < 300 || primaryImageHeight.Value < 150))
+    {
+        primaryImageUrl = null;
+    }
+
+    bool isVideoArticle = articleTags.Contains("video", StringComparer.OrdinalIgnoreCase);
+    if (isVideoArticle)
+    {
+        primaryImageUrl = null;
+    }
+    string primaryImageAlt = primaryImage?.Name ?? Model.Name;
+
+    string rawBodyHtml = Model.Value<string>("bodyText") ?? string.Empty;
+    string bodyHtml = RemoveLeadingDuplicateHero(rawBodyHtml, primaryImageUrl, Model.Name);
 }
 
 <article class="article-page">
@@ -13,5 +54,291 @@
         }
     </header>
 
-    @await Html.PartialAsync("Partials/Site/ContentBlocks", Model)
+    @if (string.IsNullOrWhiteSpace(primaryImageUrl) == false)
+    {
+        <figure class="article-primary-image">
+            <img src="@primaryImageUrl" alt="@primaryImageAlt" loading="lazy" />
+        </figure>
+    }
+
+    @if (string.IsNullOrWhiteSpace(bodyHtml) == false)
+    {
+        <section class="rich-text">
+            @Html.Raw(bodyHtml)
+        </section>
+    }
+
+    @if (Model.HasValue("contentBlocks"))
+    {
+        @await Html.GetBlockListHtmlAsync(Model, "contentBlocks")
+    }
 </article>
+
+@functions {
+    private static string RemoveLeadingDuplicateHero(string html, string? primaryImageUrl, string articleTitle)
+    {
+        if (string.IsNullOrWhiteSpace(html))
+        {
+            return html;
+        }
+
+        string trimmed = html.Trim();
+
+        trimmed = RemoveShareLinksLists(trimmed);
+        trimmed = RemoveEmptyFigures(trimmed);
+        trimmed = RemoveLeadingFigureNearTopWhenPrimaryExists(trimmed, primaryImageUrl);
+        trimmed = RemoveDuplicatePrimaryImageNearTop(trimmed, primaryImageUrl);
+
+        for (int i = 0; i < 8; i++)
+        {
+            string before = trimmed;
+
+            trimmed = RemoveLeadingShareLinksList(trimmed);
+            trimmed = RemoveLeadingEmptyFigure(trimmed);
+            trimmed = RemoveLeadingNonImageFigure(trimmed);
+            trimmed = RemoveLeadingDuplicatePrimaryImage(trimmed, primaryImageUrl);
+            trimmed = RemoveLeadingPictureCredit(trimmed);
+            trimmed = RemoveLeadingTitleEcho(trimmed, articleTitle);
+
+            if (string.Equals(before, trimmed, StringComparison.Ordinal))
+            {
+                break;
+            }
+        }
+
+        return trimmed.Trim();
+    }
+
+    private static string RemoveLeadingDuplicatePrimaryImage(string html, string? primaryImageUrl)
+    {
+        if (string.IsNullOrWhiteSpace(primaryImageUrl))
+        {
+            return html;
+        }
+
+        Match firstImage = Regex.Match(
+            html,
+            "^\\s*(?:<figure[^>]*>\\s*)?(?:<p[^>]*>\\s*)?<img[^>]*src=\"(?<src>[^\"]+)\"[^>]*>(?:\\s*</p>)?(?:\\s*<figcaption[^>]*>.*?</figcaption>)?(?:\\s*</figure>)?\\s*",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+        if (firstImage.Success == false)
+        {
+            return html;
+        }
+
+        string firstSrc = firstImage.Groups["src"].Value;
+        return UrlsMatch(firstSrc, primaryImageUrl) ? html[firstImage.Length..] : html;
+    }
+
+    private static string RemoveLeadingShareLinksList(string html)
+    {
+        Match listMatch = Regex.Match(
+            html,
+            "^\\s*<(ul|ol)[^>]*>(?<content>.*?)</\\1>\\s*",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+        if (listMatch.Success == false)
+        {
+            return html;
+        }
+
+        string listContent = listMatch.Groups["content"].Value;
+        bool isShareList = Regex.IsMatch(
+            listContent,
+            "LinkedIn|Facebook|Twitter|Mail|Comment|shareArticle|sharer\\.php|intent/tweet|mailto:",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+        return isShareList ? html[listMatch.Length..] : html;
+    }
+
+    private static string RemoveShareLinksLists(string html)
+    {
+        return Regex.Replace(
+            html,
+            "<(ul|ol)[^>]*>.*?</\\1>",
+            match =>
+            {
+                bool isShareList = Regex.IsMatch(
+                    match.Value,
+                    "LinkedIn|Facebook|Twitter|Mail|Comment|shareArticle|sharer\\.php|intent/tweet|mailto:",
+                    RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+                return isShareList ? string.Empty : match.Value;
+            },
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+    }
+
+    private static string RemoveLeadingEmptyFigure(string html)
+    {
+        Match emptyFigure = Regex.Match(
+            html,
+            "^\\s*<figure[^>]*>\\s*</figure>\\s*",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+        return emptyFigure.Success ? html[emptyFigure.Length..] : html;
+    }
+
+    private static string RemoveLeadingNonImageFigure(string html)
+    {
+        Match figure = Regex.Match(
+            html,
+            "^\\s*<figure[^>]*>(?<content>.*?)</figure>\\s*",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+        if (figure.Success == false)
+        {
+            return html;
+        }
+
+        string content = figure.Groups["content"].Value;
+        bool hasImage = Regex.IsMatch(content, "<img\\b", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        return hasImage ? html : html[figure.Length..];
+    }
+
+    private static string RemoveEmptyFigures(string html)
+    {
+        return Regex.Replace(
+            html,
+            "<figure[^>]*>\\s*</figure>",
+            string.Empty,
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+    }
+
+    private static string RemoveDuplicatePrimaryImageNearTop(string html, string? primaryImageUrl)
+    {
+        if (string.IsNullOrWhiteSpace(primaryImageUrl))
+        {
+            return html;
+        }
+
+        MatchCollection imageMatches = Regex.Matches(
+            html,
+            "(?:<figure[^>]*>\\s*)?(?:<p[^>]*>\\s*)?<img[^>]*src=\"(?<src>[^\"]+)\"[^>]*>(?:\\s*</p>)?(?:\\s*<figcaption[^>]*>.*?</figcaption>)?(?:\\s*</figure>)?",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+        foreach (Match match in imageMatches)
+        {
+            if (match.Index > 2500)
+            {
+                break;
+            }
+
+            string src = match.Groups["src"].Value;
+            string prefixText = NormalizePlainText(StripHtml(html[..match.Index]));
+            bool isLeadingImage = string.IsNullOrWhiteSpace(prefixText);
+
+            if (UrlsMatch(src, primaryImageUrl) || isLeadingImage)
+            {
+                return html.Remove(match.Index, match.Length);
+            }
+        }
+
+        return html;
+    }
+
+    private static string RemoveLeadingFigureNearTopWhenPrimaryExists(string html, string? primaryImageUrl)
+    {
+        if (string.IsNullOrWhiteSpace(primaryImageUrl))
+        {
+            return html;
+        }
+
+        MatchCollection figureMatches = Regex.Matches(
+            html,
+            "<figure[^>]*>.*?</figure>",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+        foreach (Match match in figureMatches)
+        {
+            if (match.Index > 2500)
+            {
+                break;
+            }
+
+            string prefixText = NormalizePlainText(StripHtml(html[..match.Index]));
+            if (string.IsNullOrWhiteSpace(prefixText))
+            {
+                return html.Remove(match.Index, match.Length);
+            }
+        }
+
+        return html;
+    }
+
+    private static string RemoveLeadingPictureCredit(string html)
+    {
+        Match credit = Regex.Match(
+            html,
+            "^\\s*<p[^>]*>\\s*(?:<[^>]+>\\s*)*(?:Picture|Image)\\s*:\\s*.*?</p>\\s*",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+        return credit.Success ? html[credit.Length..] : html;
+    }
+
+    private static string RemoveLeadingTitleEcho(string html, string articleTitle)
+    {
+        Match titleEcho = Regex.Match(
+            html,
+            "^\\s*<(p|div|span|strong|em)[^>]*>(?<value>.*?)</\\1>\\s*",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+        if (titleEcho.Success == false)
+        {
+            return html;
+        }
+
+        string candidate = NormalizePlainText(StripHtml(titleEcho.Groups["value"].Value));
+        string title = NormalizePlainText(articleTitle);
+        return string.IsNullOrWhiteSpace(candidate) == false && string.Equals(candidate, title, StringComparison.OrdinalIgnoreCase)
+            ? html[titleEcho.Length..]
+            : html;
+    }
+
+    private static bool UrlsMatch(string left, string right)
+    {
+        string l = NormalizeUrlForCompare(left);
+        string r = NormalizeUrlForCompare(right);
+
+        return string.IsNullOrWhiteSpace(l) == false
+            && string.IsNullOrWhiteSpace(r) == false
+            && string.Equals(l, r, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeUrlForCompare(string value)
+    {
+        string cleaned = (value ?? string.Empty).Trim();
+        if (cleaned.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        if (Uri.TryCreate(cleaned, UriKind.Absolute, out Uri? absolute))
+        {
+            cleaned = absolute.AbsolutePath;
+        }
+
+        int queryIndex = cleaned.IndexOfAny(['?', '#']);
+        if (queryIndex >= 0)
+        {
+            cleaned = cleaned[..queryIndex];
+        }
+
+        return cleaned.Trim('/').ToLowerInvariant();
+    }
+
+    private static string StripHtml(string input)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            return string.Empty;
+        }
+
+        string withoutTags = Regex.Replace(input, "<[^>]+>", string.Empty);
+        return System.Net.WebUtility.HtmlDecode(withoutTags).Trim();
+    }
+
+    private static string NormalizePlainText(string value)
+    {
+        return Regex.Replace(value ?? string.Empty, "\\s+", " ").Trim();
+    }
+}

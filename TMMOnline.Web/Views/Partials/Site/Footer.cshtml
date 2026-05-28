@@ -1,7 +1,43 @@
 @inherits UmbracoViewPage
+@{
+    var home = Model.Root();
+    var navItems = home?.Children()?
+        .Where(x => x.IsVisible())
+        .Where(x => x.Name.Equals("Primary Image Routing Test", StringComparison.OrdinalIgnoreCase) == false)
+        .ToArray() ?? Array.Empty<IPublishedContent>();
+
+    string ResolveNavUrl(IPublishedContent node)
+    {
+        string? url = node.Url();
+        if (string.IsNullOrWhiteSpace(url) == false && url != "/")
+        {
+            return url;
+        }
+
+        return $"/?node={node.Id}";
+    }
+}
 
 <footer class="site-footer">
-    <div class="container">
-        <p>&copy; @DateTime.UtcNow.Year TMMOnline. All rights reserved.</p>
+    <div class="container footer-grid">
+        <section>
+            <h2>TMM Online</h2>
+            <p>The migrated site is being shaped around the legacy publication style: fast scanning, strong section identity and article-led navigation.</p>
+        </section>
+
+        <section>
+            <h2>Sections</h2>
+            <ul class="footer-links">
+                @foreach (var item in navItems)
+                {
+                    <li><a href="@ResolveNavUrl(item)">@item.Name</a></li>
+                }
+            </ul>
+        </section>
+
+        <section>
+            <h2>About</h2>
+            <p>&copy; @DateTime.UtcNow.Year TMMOnline. Built in Umbraco for the ongoing migration from the legacy website.</p>
+        </section>
     </div>
 </footer>

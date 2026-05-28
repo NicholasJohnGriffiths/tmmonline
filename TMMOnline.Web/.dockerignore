@@ -11,10 +11,17 @@
 **/*.*proj.user
 **/*.dbmdl
 **/*.jfm
+artifacts/
+bin/
+obj/
+wwwroot/media/
+umbraco/Logs/
 **/artifacts
 **/bin
 **/node_modules
 **/obj
+**/wwwroot/media
+**/umbraco/Logs
 **/secrets.dev.yaml
 **/values.dev.yaml
 README.md

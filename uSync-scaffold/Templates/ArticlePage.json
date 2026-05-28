@@ -1,0 +1,5 @@
+{
+  "alias": "ArticlePage",
+  "path": "Views/ArticlePage.cshtml",
+  "doctype": "articlePage"
+}

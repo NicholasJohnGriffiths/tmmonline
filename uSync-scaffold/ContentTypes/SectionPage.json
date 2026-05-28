@@ -1,0 +1,12 @@
+{
+  "type": "documentType",
+  "name": "Section Page",
+  "alias": "sectionPage",
+  "template": "SectionPage",
+  "defaultTemplate": "SectionPage",
+  "isElement": false,
+  "isContainer": true,
+  "allowedAsRoot": false,
+  "compositions": ["pageSeo", "pageContent"],
+  "allowedChildren": ["sectionPage", "articlePage"]
+}
