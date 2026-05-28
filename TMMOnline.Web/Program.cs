@@ -51,7 +51,16 @@ WebApplication app = builder.Build();
 
 app.UseForwardedHeaders();
 
-await app.BootUmbracoAsync();
+try
+{
+    await app.BootUmbracoAsync();
+}
+catch (Exception ex)
+{
+    app.Logger.LogCritical(ex, "Umbraco boot failed during application startup.");
+    Console.Error.WriteLine($"[BootFailure] {ex}");
+    throw;
+}
 
 Dictionary<string, int> routedSlugToNodeId = new(StringComparer.OrdinalIgnoreCase);
 DateTimeOffset routedSlugCacheExpiry = DateTimeOffset.MinValue;
