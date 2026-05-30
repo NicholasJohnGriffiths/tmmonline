@@ -201,6 +201,44 @@ app.Use(async (context, next) =>
         && context.Request.Query.ContainsKey("node") == false)
     {
         string path = context.Request.Path.Value ?? string.Empty;
+        string routeMarker = path.Equals("/search", StringComparison.OrdinalIgnoreCase)
+            ? "search"
+            : path.Equals("/newsletter-signup", StringComparison.OrdinalIgnoreCase)
+                ? "newsletter-signup"
+                : path.Equals("/advertise", StringComparison.OrdinalIgnoreCase)
+                    ? "advertise"
+                    : path.Equals("/about", StringComparison.OrdinalIgnoreCase)
+                        ? "about"
+                        : path.Equals("/contact", StringComparison.OrdinalIgnoreCase)
+                            ? "contact"
+                            : path.Equals("/privacy", StringComparison.OrdinalIgnoreCase)
+                                ? "privacy"
+                                : path.Equals("/work-with-us", StringComparison.OrdinalIgnoreCase)
+                                    ? "work-with-us"
+                                    : string.Empty;
+
+        if (string.IsNullOrWhiteSpace(routeMarker) == false)
+        {
+            context.Request.Path = "/";
+            string existingQuery = context.Request.QueryString.HasValue
+                ? context.Request.QueryString.Value!.TrimStart('?')
+                : string.Empty;
+            string routeQuery = $"view={routeMarker}";
+            context.Request.QueryString = string.IsNullOrWhiteSpace(existingQuery)
+                ? new QueryString($"?{routeQuery}")
+                : new QueryString($"?{routeQuery}&{existingQuery}");
+        }
+    }
+
+    await next();
+});
+
+app.Use(async (context, next) =>
+{
+    if ((HttpMethods.IsGet(context.Request.Method) || HttpMethods.IsHead(context.Request.Method))
+        && context.Request.Query.ContainsKey("node") == false)
+    {
+        string path = context.Request.Path.Value ?? string.Empty;
         string trimmed = path.Trim('/');
         bool hasSingleSegment = trimmed.Length > 0 && trimmed.Contains('/') == false;
         bool looksLikeFile = trimmed.Contains('.');

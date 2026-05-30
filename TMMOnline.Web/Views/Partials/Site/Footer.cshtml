@@ -1,43 +1,40 @@
 @inherits UmbracoViewPage
-@{
-    var home = Model.Root();
-    var navItems = home?.Children()?
-        .Where(x => x.IsVisible())
-        .Where(x => x.Name.Equals("Primary Image Routing Test", StringComparison.OrdinalIgnoreCase) == false)
-        .ToArray() ?? Array.Empty<IPublishedContent>();
-
-    string ResolveNavUrl(IPublishedContent node)
-    {
-        string? url = node.Url();
-        if (string.IsNullOrWhiteSpace(url) == false && url != "/")
-        {
-            return url;
-        }
-
-        return $"/?node={node.Id}";
-    }
-}
-
 <footer class="site-footer">
     <div class="container footer-grid">
         <section>
             <h2>TMM Online</h2>
-            <p>The migrated site is being shaped around the legacy publication style: fast scanning, strong section identity and article-led navigation.</p>
-        </section>
-
-        <section>
-            <h2>Sections</h2>
-            <ul class="footer-links">
-                @foreach (var item in navItems)
-                {
-                    <li><a href="@ResolveNavUrl(item)">@item.Name</a></li>
-                }
-            </ul>
+            <p>TMM - The Mortgage Mag is 100% dedicated to delivering excellent news, video and information to all mortgage advisers in New Zealand. We deliver news to advisers through TMMOnline.nz and its associated email newsletter. Every two months we publish TMM - The Magazine. This is sent to all mortgage advisers. TMM is part of Tarawera Publishing Ltd. TPL is the oldest and largest publisher in NZ's financial adviser market.</p>
         </section>
 
         <section>
             <h2>About</h2>
-            <p>&copy; @DateTime.UtcNow.Year TMMOnline. Built in Umbraco for the ongoing migration from the legacy website.</p>
+            <ul class="footer-links">
+                <li><a href="/about">About Us</a></li>
+                <li><a href="/contact">Contact Us</a></li>
+                <li><a href="/work-with-us">Work with us</a></li>
+                <li><a href="/privacy">Privacy</a></li>
+            </ul>
         </section>
+
+        <section>
+            <h2>Connect</h2>
+            <ul class="footer-links">
+                <li><a href="/newsletter-signup">Newsletter</a></li>
+                <li><a href="/advertise">Advertise</a></li>
+                <li><a href="https://issuu.com/tmm-themortgagemag" target="_blank" rel="noopener noreferrer">The Magazine</a></li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>Our Network</h2>
+            <ul class="footer-links">
+                <li><a href="http://www.goodreturns.co.nz/" target="_blank" rel="noopener noreferrer">Good Returns</a></li>
+                <li><a href="http://www.landlords.co.nz/" target="_blank" rel="noopener noreferrer">Landlords</a></li>
+                <li><a href="http://www.depositrates.co.nz/" target="_blank" rel="noopener noreferrer">Deposit Rates</a></li>
+            </ul>
+        </section>
+    </div>
+    <div class="container">
+        <p>&copy; 2026 <a href="http://www.tarawera.co.nz/" target="_blank" rel="noopener noreferrer">Tarawera Publishing Ltd</a> | The New Zealand Mortagage Magazine</p>
     </div>
 </footer>

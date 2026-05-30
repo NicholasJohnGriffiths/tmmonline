@@ -22,6 +22,7 @@ public sealed class DoctypeProvisioningComposer : IComposer
 
 public sealed class DoctypeProvisioningComponent : IComponent
 {
+    private const string SkipProvisioningEnvironmentVariable = "TMMONLINE_SKIP_DOCTYPE_PROVISIONING";
     private const string ForceRunEnvironmentVariable = "TMMONLINE_DOCTYPE_PROVISIONING_FORCE";
     private const string DefaultTopAdvertLinkUrl = "https://tella.co.nz/";
 
@@ -62,6 +63,14 @@ public sealed class DoctypeProvisioningComponent : IComponent
 
     public void Initialize()
     {
+        bool skipProvisioning = string.Equals(Environment.GetEnvironmentVariable(SkipProvisioningEnvironmentVariable), "true", StringComparison.OrdinalIgnoreCase);
+        if (skipProvisioning)
+        {
+            Console.WriteLine("[DoctypeProvisioning] Skipping due to TMMONLINE_SKIP_DOCTYPE_PROVISIONING=true.");
+            _logger.LogInformation("Document type provisioning skipped due to environment variable {EnvironmentVariable}.", SkipProvisioningEnvironmentVariable);
+            return;
+        }
+
         bool forceRun = string.Equals(Environment.GetEnvironmentVariable(ForceRunEnvironmentVariable), "true", StringComparison.OrdinalIgnoreCase);
         if (!forceRun && IsProvisioningAlreadyComplete())
         {

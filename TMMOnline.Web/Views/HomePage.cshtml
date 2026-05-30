@@ -9,8 +9,22 @@
 @inherits UmbracoViewPage
 @{
     Layout = "_Layout.cshtml";
-    var heading = Model.Value<string>("heroHeading") ?? Model.Name;
-    var intro = Model.Value<string>("introText") ?? "Independent mortgage-market news, people updates and property coverage.";
+    string currentPath = (Context.Request.Path.Value ?? string.Empty).TrimEnd('/');
+    string routeView = (Context.Request.Query["view"].FirstOrDefault() ?? string.Empty).Trim();
+    bool isSearchRoute = string.Equals(routeView, "search", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(currentPath, "/search", StringComparison.OrdinalIgnoreCase);
+    bool isNewsletterRoute = string.Equals(routeView, "newsletter-signup", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(currentPath, "/newsletter-signup", StringComparison.OrdinalIgnoreCase);
+    bool isAdvertiseRoute = string.Equals(routeView, "advertise", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(currentPath, "/advertise", StringComparison.OrdinalIgnoreCase);
+    bool isAboutRoute = string.Equals(routeView, "about", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(currentPath, "/about", StringComparison.OrdinalIgnoreCase);
+    bool isContactRoute = string.Equals(routeView, "contact", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(currentPath, "/contact", StringComparison.OrdinalIgnoreCase);
+    bool isPrivacyRoute = string.Equals(routeView, "privacy", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(currentPath, "/privacy", StringComparison.OrdinalIgnoreCase);
+    bool isWorkWithUsRoute = string.Equals(routeView, "work-with-us", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(currentPath, "/work-with-us", StringComparison.OrdinalIgnoreCase);
     string? requestedNode = Context.Request.Query["node"].FirstOrDefault();
     IPublishedContent? selectedNode = null;
     if (int.TryParse(requestedNode, out int selectedNodeId))
@@ -51,14 +65,49 @@
         .OrderByDescending(x => x.Value<DateTime?>("publishedOn") ?? DateTime.MinValue)
         .ThenByDescending(x => x.CreateDate)
         .ToArray();
-    var featuredArticle = allArticles.FirstOrDefault();
-    var leadArticles = allArticles.Skip(1).Take(4).ToArray();
-    var mostReadArticles = allArticles.Take(5).ToArray();
-    var sectionPages = Model.Root().Children()
-        .Where(x => x.IsVisible())
-        .Where(x => x.Name.Equals("Primary Image Routing Test", StringComparison.OrdinalIgnoreCase) == false)
-        .Take(4)
+    var dedupedArticles = DeduplicateArticles(allArticles).ToArray();
+    var dedupedArticlesWithImage = dedupedArticles
+        .Where(x => string.IsNullOrWhiteSpace(GetPrimaryImageUrl(x)) == false)
         .ToArray();
+    var newsArticles = dedupedArticlesWithImage
+        .Where(x => string.Equals(ResolveOwnerSectionKey(x), "news", StringComparison.OrdinalIgnoreCase))
+        .OrderByDescending(x => x.Value<DateTime?>("publishedOn") ?? DateTime.MinValue)
+        .ThenByDescending(x => x.CreateDate)
+        .ToArray();
+    var featuredArticle = newsArticles.FirstOrDefault();
+    var leadArticles = newsArticles.Skip(1).Take(4).ToArray();
+
+    var displayedNewsIds = new HashSet<int>();
+    if (featuredArticle != null)
+    {
+        displayedNewsIds.Add(featuredArticle.Id);
+    }
+
+    foreach (var leadArticle in leadArticles)
+    {
+        displayedNewsIds.Add(leadArticle.Id);
+    }
+
+    var mostReadArticles = newsArticles
+        .Where(x => displayedNewsIds.Contains(x.Id) == false)
+        .Take(5)
+        .ToArray();
+
+    var peopleArticles = dedupedArticlesWithImage
+        .Where(x => string.Equals(ResolveOwnerSectionKey(x), "people", StringComparison.OrdinalIgnoreCase))
+        .Take(2)
+        .ToArray();
+
+    var propertyArticles = dedupedArticlesWithImage
+        .Where(x => string.Equals(ResolveOwnerSectionKey(x), "property-news", StringComparison.OrdinalIgnoreCase))
+        .Take(2)
+        .ToArray();
+
+    var peopleSectionNode = Model.Root().Children()
+        .FirstOrDefault(x => string.Equals(ResolveSectionKey(x), "people", StringComparison.OrdinalIgnoreCase));
+
+    var propertySectionNode = Model.Root().Children()
+        .FirstOrDefault(x => string.Equals(ResolveSectionKey(x), "property-news", StringComparison.OrdinalIgnoreCase));
     var ratesSection = Model.Root().Children().FirstOrDefault(x => x.Name.Contains("rates", StringComparison.OrdinalIgnoreCase));
     var rateRows = new[]
     {
@@ -71,6 +120,11 @@
 
     string ResolveContentUrl(IPublishedContent node)
     {
+        if (string.Equals(node.ContentType.Alias, "articlePage", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"/?node={node.Id}";
+        }
+
         string? url = node.Url();
         if (string.IsNullOrWhiteSpace(url) == false && url != "/")
         {
@@ -397,6 +451,32 @@
 
         var tags = ContentTagParser.ParseTags(sectionNode.Value<string>("sectionTags"));
         return tags.Contains("conference", StringComparer.OrdinalIgnoreCase);
+    }
+
+    bool ArticleMatchesSearch(IPublishedContent article, string searchTerm)
+    {
+        if (string.IsNullOrWhiteSpace(searchTerm))
+        {
+            return false;
+        }
+
+        string haystack = string.Join(" ", new[]
+        {
+            article.Name,
+            article.Value<string>("leadText"),
+            article.Value<string>("introText"),
+            article.Value<string>("bodyText"),
+            article.Value<string>("articleTags"),
+            article.Value<string>("legacySourceUrl"),
+            ResolveOwnerSectionKey(article)
+        }.Where(x => string.IsNullOrWhiteSpace(x) == false));
+
+        string[] terms = Regex.Split(searchTerm.Trim().ToLowerInvariant(), "\\s+")
+            .Where(x => string.IsNullOrWhiteSpace(x) == false)
+            .ToArray();
+
+        return terms.Length > 0
+            && terms.All(term => haystack.Contains(term, StringComparison.OrdinalIgnoreCase));
     }
 
     string NormalizeConferenceProgrammeHtml(string? rawHtml)
@@ -745,16 +825,12 @@
                         var articleHref = ResolveContentUrl(article);
 
                         <article class="section-article-card">
-                            <a class="section-article-link" href="@articleHref">
-                                @if (string.IsNullOrWhiteSpace(articleImageUrl) == false)
-                                {
+                            @if (string.IsNullOrWhiteSpace(articleImageUrl) == false)
+                            {
+                                <a class="section-article-link" href="@articleHref">
                                     <img src="@articleImageUrl" alt="@article.Name" loading="lazy" />
-                                }
-                                else
-                                {
-                                    <div class="section-article-placeholder" aria-hidden="true">No Image</div>
-                                }
-                            </a>
+                                </a>
+                            }
 
                             <div class="section-article-content">
                                 <h3><a href="@articleHref">@article.Name</a></h3>
@@ -839,6 +915,20 @@
 else if (selectedNode?.ContentType.Alias.Equals("articlePage", StringComparison.OrdinalIgnoreCase) == true)
 {
     var publishedOn = NormalizeDisplayPublishedOn(selectedNode.Value<DateTime?>("publishedOn"));
+    string articleUrl = $"{Context.Request.Scheme}://{Context.Request.Host}{Context.Request.PathBase}{Context.Request.Path}{Context.Request.QueryString}";
+    string encodedArticleUrl = Uri.EscapeDataString(articleUrl);
+    string encodedArticleTitle = Uri.EscapeDataString(selectedNode.Name ?? "");
+    string instagramShareUrl = $"https://www.instagram.com/?url={encodedArticleUrl}";
+    string facebookShareUrl = $"https://www.facebook.com/sharer/sharer.php?u={encodedArticleUrl}";
+    string xShareUrl = $"https://twitter.com/intent/tweet?url={encodedArticleUrl}&text={encodedArticleTitle}";
+    string currentArticleSectionKey = ResolveOwnerSectionKey(selectedNode);
+    var readNextArticles = dedupedArticles
+        .Where(article => article.Id != selectedNode.Id)
+        .Where(article => string.Equals(ResolveOwnerSectionKey(article), currentArticleSectionKey, StringComparison.OrdinalIgnoreCase))
+        .OrderByDescending(article => article.Value<DateTime?>("publishedOn") ?? DateTime.MinValue)
+        .ThenByDescending(article => article.CreateDate)
+        .Take(3)
+        .ToArray();
     var articleTags = ContentTagParser.ParseTags(selectedNode.Value<string>("articleTags"));
     IPublishedContent? primaryImage = selectedNode.Value<IPublishedContent>("primaryImage");
     MediaWithCrops? imageWithCrops = selectedNode.Value<MediaWithCrops>("primaryImage");
@@ -888,10 +978,390 @@ else if (selectedNode?.ContentType.Alias.Equals("articlePage", StringComparison.
             </section>
         }
 
+        <section class="article-social-share" aria-label="Share this article">
+            <p class="article-social-label">Share this article</p>
+            <div class="article-social-links">
+                <a class="article-social-link article-social-link-instagram" href="@instagramShareUrl" target="_blank" rel="noopener noreferrer" aria-label="Share on Instagram">IG</a>
+                <a class="article-social-link article-social-link-facebook" href="@facebookShareUrl" target="_blank" rel="noopener noreferrer" aria-label="Share on Facebook">f</a>
+                <a class="article-social-link article-social-link-x" href="@xShareUrl" target="_blank" rel="noopener noreferrer" aria-label="Share on X (Twitter)">X</a>
+            </div>
+        </section>
+
         @if (selectedNode.HasValue("contentBlocks"))
         {
             @await Html.GetBlockListHtmlAsync(selectedNode, "contentBlocks")
         }
+
+        @if (readNextArticles.Length > 0)
+        {
+            <section class="article-read-next" aria-label="Read this next">
+                <h2>Read this next</h2>
+                <div class="section-card-grid section-card-grid-three">
+                    @foreach (var article in readNextArticles)
+                    {
+                        var nextArticleDate = NormalizeDisplayPublishedOn(article.Value<DateTime?>("publishedOn"));
+                        var nextArticleImageUrl = GetPrimaryImageUrl(article);
+                        var nextArticleLead = article.Value<string>("leadText") ?? article.Value<string>("introText") ?? "Read the full story.";
+                        var nextArticleHref = ResolveContentUrl(article);
+
+                        <article class="section-article-card">
+                            <a class="section-article-link" href="@nextArticleHref">
+                                @if (string.IsNullOrWhiteSpace(nextArticleImageUrl) == false)
+                                {
+                                    <img src="@nextArticleImageUrl" alt="@article.Name" loading="lazy" />
+                                }
+                                else
+                                {
+                                    <div class="section-article-placeholder" aria-hidden="true">No Image</div>
+                                }
+                            </a>
+
+                            <div class="section-article-content">
+                                <h3><a href="@nextArticleHref">@article.Name</a></h3>
+                                @if (!string.IsNullOrWhiteSpace(nextArticleLead))
+                                {
+                                    <p class="section-article-excerpt">@nextArticleLead</p>
+                                }
+                                @if (nextArticleDate.HasValue)
+                                {
+                                    <p class="meta"><span class="meta-date">@nextArticleDate.Value.ToString("dd MMM yyyy")</span></p>
+                                }
+                            </div>
+                        </article>
+                    }
+                </div>
+            </section>
+        }
+    </article>
+}
+else if (isSearchRoute)
+{
+    string searchTerm = (Context.Request.Query["q"].FirstOrDefault() ?? string.Empty).Trim();
+    int searchPage = ParsePageNumber(Context.Request.Query["page"].FirstOrDefault());
+    const int resultsPerPage = 9;
+
+    var matchingArticles = string.IsNullOrWhiteSpace(searchTerm)
+        ? Array.Empty<IPublishedContent>()
+        : dedupedArticles
+            .Where(article => ArticleMatchesSearch(article, searchTerm))
+            .OrderByDescending(article => article.Value<DateTime?>("publishedOn") ?? DateTime.MinValue)
+            .ThenByDescending(article => article.CreateDate)
+            .ToArray();
+
+    int totalPages = Math.Max(1, (int)Math.Ceiling(matchingArticles.Length / (double)resultsPerPage));
+    searchPage = Math.Clamp(searchPage, 1, totalPages);
+    var pagedResults = matchingArticles
+        .Skip((searchPage - 1) * resultsPerPage)
+        .Take(resultsPerPage)
+        .ToArray();
+
+    <section class="content-page search-results-page">
+        <header>
+            <h1>Search Results</h1>
+            <p class="lead">Search all published articles by title, body text and tags.</p>
+        </header>
+
+        <form class="search-form" method="get" action="/search">
+            <label class="sr-only" for="search-q">Search articles</label>
+            <input id="search-q" name="q" type="search" value="@searchTerm" placeholder="Search articles" />
+            <button type="submit">Search</button>
+        </form>
+
+        @if (string.IsNullOrWhiteSpace(searchTerm))
+        {
+            <p class="meta">Enter a search term to find articles.</p>
+        }
+        else
+        {
+            <p class="meta">@matchingArticles.Length result@(matchingArticles.Length == 1 ? string.Empty : "s") found for "@searchTerm".</p>
+
+            @if (pagedResults.Length > 0)
+            {
+                <section class="section-articles search-results-articles">
+                    <div class="section-card-grid section-card-grid-three">
+                        @foreach (var article in pagedResults)
+                        {
+                            var articlePublishedOn = NormalizeDisplayPublishedOn(article.Value<DateTime?>("publishedOn"));
+                            var articleTags = ContentTagParser.ParseTags(article.Value<string>("articleTags"));
+                            var articleLead = article.Value<string>("leadText") ?? article.Value<string>("introText") ?? "Read the full story.";
+                            var articleImageUrl = GetPrimaryImageUrl(article);
+                            var articleHref = ResolveContentUrl(article);
+
+                            <article class="section-article-card">
+                                @if (string.IsNullOrWhiteSpace(articleImageUrl) == false)
+                                {
+                                    <a class="section-article-link" href="@articleHref">
+                                        <img src="@articleImageUrl" alt="@article.Name" loading="lazy" />
+                                    </a>
+                                }
+
+                                <div class="section-article-content">
+                                    <h3><a href="@articleHref">@article.Name</a></h3>
+                                    @if (!string.IsNullOrWhiteSpace(articleLead))
+                                    {
+                                        <p class="section-article-excerpt">@articleLead</p>
+                                    }
+                                    <p class="meta">
+                                        @if (articlePublishedOn.HasValue)
+                                        {
+                                            <span class="meta-date">@articlePublishedOn.Value.ToString("dd MMM yyyy")</span>
+                                        }
+                                        @if (articleTags.Count > 0)
+                                        {
+                                            <span class="meta-tags">@string.Join(", ", articleTags)</span>
+                                        }
+                                    </p>
+                                </div>
+                            </article>
+                        }
+                    </div>
+
+                    @if (totalPages > 1)
+                    {
+                        <nav class="section-pagination" aria-label="Search results pages">
+                            @if (searchPage > 1)
+                            {
+                                <a class="section-pagination-link section-pagination-link-nav" href="@BuildPageUrl(searchPage - 1)" rel="prev" aria-label="Go to previous page">Previous</a>
+                            }
+                            else
+                            {
+                                <span class="section-pagination-link section-pagination-link-nav is-disabled" aria-disabled="true">Previous</span>
+                            }
+
+                            <ol class="section-pagination-pages">
+                                @foreach (int? pageItem in BuildVisiblePageItems(searchPage, totalPages))
+                                {
+                                    if (pageItem.HasValue)
+                                    {
+                                        int pageNumber = pageItem.Value;
+                                        bool isCurrentPage = pageNumber == searchPage;
+                                        <li>
+                                            @if (isCurrentPage)
+                                            {
+                                                <span class="section-pagination-link section-pagination-link-number is-current" aria-current="page">@(pageNumber)</span>
+                                            }
+                                            else
+                                            {
+                                                <a class="section-pagination-link section-pagination-link-number" href="@BuildPageUrl(pageNumber)" aria-label="Go to page @(pageNumber)">@(pageNumber)</a>
+                                            }
+                                        </li>
+                                    }
+                                    else
+                                    {
+                                        <li><span class="section-pagination-ellipsis" aria-hidden="true">...</span></li>
+                                    }
+                                }
+                            </ol>
+
+                            <span class="section-pagination-status">Page @searchPage of @totalPages</span>
+
+                            @if (searchPage < totalPages)
+                            {
+                                <a class="section-pagination-link section-pagination-link-nav" href="@BuildPageUrl(searchPage + 1)" rel="next" aria-label="Go to next page">Next</a>
+                            }
+                            else
+                            {
+                                <span class="section-pagination-link section-pagination-link-nav is-disabled" aria-disabled="true">Next</span>
+                            }
+                        </nav>
+                    }
+                </section>
+            }
+            else
+            {
+                <p class="meta">No articles matched "@searchTerm".</p>
+            }
+        }
+    </section>
+}
+else if (isNewsletterRoute)
+{
+    <article class="content-page newsletter-page">
+        <header>
+            <h1>Email Newsletter</h1>
+            <p class="lead">Sign up to TMM's daily email newsletter to keep up to date with industry news, what is happening with mortgage rates and recent appointments.</p>
+        </header>
+
+        <section class="newsletter-intro">
+            <div class="newsletter-copy">
+                <p>It's free to join.</p>
+                <p>TMM's newsletter keeps mortgage advisers current with the latest news, rates coverage and industry appointments.</p>
+                <div class="newsletter-cta-buttons" role="group" aria-label="Newsletter options">
+                    <button type="button" class="newsletter-cta-button" disabled>Get Print</button>
+                    <button type="button" class="newsletter-cta-button" disabled>Get Digital</button>
+                    <button type="button" class="newsletter-cta-button" disabled>Get Both</button>
+                </div>
+            </div>
+
+            <figure class="newsletter-figure">
+                <img src="https://www.tarawera.co.nz/img/mag/mortgage.jpg" alt="Mortgage Mag" loading="lazy" />
+            </figure>
+        </section>
+
+    </article>
+}
+else if (isAdvertiseRoute)
+{
+    <article class="content-page advertise-page">
+        <header>
+            <h1>Advertise with TMM Online</h1>
+            <p class="lead">Our goal is simple: connect your brand with mortgage advisers across New Zealand through targeted digital and print options.</p>
+        </header>
+
+        <section class="advertise-section">
+            <h2>Online Options</h2>
+            <p>At tmmonline.nz you can use a range of promotional tools.</p>
+            <ul>
+                <li>Banner ads across the site</li>
+                <li>Inclusions in our weekly email newsletter</li>
+                <li>Dedicated eDM campaigns to the TMM database</li>
+                <li>Hosted and promoted webinars</li>
+                <li>Custom campaign ideas tailored to your goals</li>
+            </ul>
+        </section>
+
+        <section class="advertise-section">
+            <h2>Print</h2>
+            <p>The Mortgage Mag also offers strong print visibility throughout the year.</p>
+            <div class="advertise-table-wrap">
+                <table class="advertise-table">
+                    <caption>TMM - The Mortgage Mag 2021 Schedule</caption>
+                    <thead>
+                        <tr>
+                            <th scope="col">Issue</th>
+                            <th scope="col">Booking deadline</th>
+                            <th scope="col">Material deadline</th>
+                            <th scope="col">On desks</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><th scope="row">Issue #1</th><td>21 Jan</td><td>28 Jan</td><td>15 Feb</td></tr>
+                        <tr><th scope="row">Issue #2</th><td>7 Mar</td><td>14 Mar</td><td>1 Apr</td></tr>
+                        <tr><th scope="row">Issue #3</th><td>29 Apr</td><td>6 May</td><td>24 May</td></tr>
+                        <tr><th scope="row">Issue #4</th><td>17 Jun</td><td>24 Jun</td><td>12 Jul</td></tr>
+                        <tr><th scope="row">Issue #5</th><td>12 Aug</td><td>19 Aug</td><td>6 Sep</td></tr>
+                        <tr><th scope="row">Issue #6</th><td>30 Sep</td><td>7 Oct</td><td>25 Oct</td></tr>
+                        <tr><th scope="row">Issue #7</th><td>11 Nov</td><td>18 Nov</td><td>6 Dec</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <p class="meta">These dates are based on the legacy schedule and may change.</p>
+        </section>
+
+        <section class="advertise-section advertise-contact">
+            <h2>Contact</h2>
+            <p>For advertising enquiries, contact Philip Macalister.</p>
+            <p>
+                <a class="section-link" href="mailto:philip@tmmonline.nz?subject=TMM%20sales%20enquiry">philip@tmmonline.nz</a><br />
+                Phone: 0274 377 527
+            </p>
+        </section>
+    </article>
+}
+else if (isAboutRoute)
+{
+    <article class="content-page advertise-page">
+        <header>
+            <h1>About TMM Online</h1>
+            <p class="lead">TMM is part of Tarawera Publishing, New Zealand's longest-standing specialist publisher in the adviser market.</p>
+        </header>
+
+        <section class="advertise-section">
+            <h2>Who We Are</h2>
+            <p>TMM - The Mortgage Mag is dedicated to delivering trusted news, video and information for mortgage advisers in New Zealand.</p>
+            <p>We publish daily coverage on TMM Online and distribute regular newsletter updates to industry readers nationwide.</p>
+        </section>
+
+        <section class="advertise-section">
+            <h2>Part of Tarawera Publishing</h2>
+            <p>Tarawera Publishing covers key personal-finance sectors including home loans, investments, insurance, KiwiSaver and property.</p>
+            <p>
+                <a class="section-link" href="/contact">Contact us</a>
+                <span aria-hidden="true"> · </span>
+                <a class="section-link" href="/work-with-us">Work with us</a>
+            </p>
+        </section>
+    </article>
+}
+else if (isContactRoute)
+{
+    <article class="content-page advertise-page">
+        <header>
+            <h1>Contact Us</h1>
+            <p class="lead">For editorial, commercial or general enquiries, get in touch with the TMM team.</p>
+        </header>
+
+        <section class="advertise-section">
+            <h2>Editorial Contact</h2>
+            <p>For republishing requests or editorial enquiries, contact the editor.</p>
+            <p><a class="section-link" href="mailto:editor@tmmonline.nz">editor@tmmonline.nz</a></p>
+        </section>
+
+        <section class="advertise-section">
+            <h2>Publisher Contact</h2>
+            <p>Philip Macalister</p>
+            <p>
+                <a class="section-link" href="mailto:philip@tmmonline.nz">philip@tmmonline.nz</a><br />
+                Phone: 0274 377 527
+            </p>
+            <p><a class="section-link" href="https://www.linkedin.com/in/philipmacalister/" target="_blank" rel="noopener noreferrer">LinkedIn Profile</a></p>
+        </section>
+    </article>
+}
+else if (isPrivacyRoute)
+{
+    <article class="content-page advertise-page">
+        <header>
+            <h1>Terms and Conditions - Tarawera Publishing</h1>
+            <p class="lead">The following terms apply to TMM Online and other websites published by Tarawera Publishing Limited.</p>
+        </header>
+
+        <section class="advertise-section">
+            <h2>General Use</h2>
+            <p>Material published by Tarawera Publishing Limited is for general information only and does not constitute financial advice.</p>
+            <p>All material is copyright Tarawera Publishing unless stated otherwise.</p>
+            <p>If content is required for commercial use, written approval must be obtained first.</p>
+        </section>
+
+        <section class="advertise-section">
+            <h2>Content Sharing and Accuracy</h2>
+            <p>Links to articles are permitted where they point to the original article and include clear acknowledgement of the source.</p>
+            <p>While reasonable care is taken to ensure accuracy, Tarawera Publishing is not liable for errors or omissions.</p>
+            <p>Third-party advertising and linked content remain the responsibility of those third parties.</p>
+        </section>
+
+        <section class="advertise-section">
+            <h2>Email and Marketing</h2>
+            <p>Newsletter users accept that newsletters may include advertising and electronic direct marketing.</p>
+            <p>Tarawera Publishing does not sell user email addresses or identifying information to third parties.</p>
+            <p>These terms are governed by New Zealand law.</p>
+        </section>
+    </article>
+}
+else if (isWorkWithUsRoute)
+{
+    <article class="content-page advertise-page">
+        <header>
+            <h1>Want to join our team?</h1>
+            <p class="lead">Tarawera Publishing is always looking for talented people to join our editorial team.</p>
+        </header>
+
+        <section class="advertise-section">
+            <h2>About the Role</h2>
+            <p>We are New Zealand's biggest and oldest publisher in the personal finance space, covering investments, financial planning, home loans, insurance, KiwiSaver and property.</p>
+            <p>Flexible working options are available, including Rotorua office roles and remote arrangements.</p>
+        </section>
+
+        <section class="advertise-section">
+            <h2>Who Should Apply</h2>
+            <p>If you are a journalist with a strong interest in personal finance, or you are building toward that specialty, we would like to hear from you.</p>
+            <p>
+                Contact Philip Macalister:<br />
+                <a class="section-link" href="mailto:philip@tarawera.co.nz?subject=Join%20the%20TPL%20team">philip@tarawera.co.nz</a><br />
+                Phone: 0274 377 527
+            </p>
+            <p><a class="section-link" href="https://nz.linkedin.com/in/philipmacalister" target="_blank" rel="noopener noreferrer">LinkedIn Profile</a></p>
+        </section>
     </article>
 }
 else
@@ -899,19 +1369,15 @@ else
 <div class="homepage-shell">
     <div class="homepage-main-column">
         <section class="homepage-hero">
-            <div class="hero-intro">
-                <span class="eyebrow">Legacy-inspired newsroom</span>
-                <h1>@heading</h1>
-                <p>@intro</p>
-            </div>
-
             @if (featuredArticle != null)
             {
                 var featuredDate = NormalizeDisplayPublishedOn(featuredArticle.Value<DateTime?>("publishedOn"));
                 var featuredLead = featuredArticle.Value<string>("leadText") ?? featuredArticle.Value<string>("introText");
                 var featuredImageUrl = GetPrimaryImageUrl(featuredArticle);
+                var featuredBodySnippet = BuildSummaryFromHtml(featuredArticle.Value<string>("bodyText"), 420);
+                var normalizedFeaturedLead = NormalizePlainText(featuredLead ?? string.Empty);
 
-                <article class="featured-story">
+                <article class="featured-story featured-story-hero">
                     @if (string.IsNullOrWhiteSpace(featuredImageUrl) == false)
                     {
                         <a class="featured-story-media" href="@ResolveContentUrl(featuredArticle)">
@@ -922,16 +1388,23 @@ else
                     {
                         <div class="featured-story-placeholder" aria-hidden="true">No Image</div>
                     }
-                    <span class="story-label">Lead story</span>
-                    <h2><a href="@ResolveContentUrl(featuredArticle)">@featuredArticle.Name</a></h2>
-                    @if (featuredDate.HasValue)
-                    {
-                        <p class="story-date">@featuredDate.Value.ToString("dddd, dd MMMM yyyy")</p>
-                    }
-                    @if (!string.IsNullOrWhiteSpace(featuredLead))
-                    {
-                        <p>@featuredLead</p>
-                    }
+                    <div class="featured-story-content">
+                        <span class="story-label">Lead story</span>
+                        <h2><a href="@ResolveContentUrl(featuredArticle)">@featuredArticle.Name</a></h2>
+                        @if (featuredDate.HasValue)
+                        {
+                            <p class="story-date">@featuredDate.Value.ToString("dddd, dd MMMM yyyy")</p>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(featuredLead))
+                        {
+                            <p>@featuredLead</p>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(featuredBodySnippet)
+                            && string.Equals(featuredBodySnippet, normalizedFeaturedLead, StringComparison.OrdinalIgnoreCase) == false)
+                        {
+                            <p class="featured-story-summary">@featuredBodySnippet</p>
+                        }
+                    </div>
                 </article>
             }
         </section>
@@ -966,38 +1439,127 @@ else
             </section>
         }
 
-        @if (sectionPages.Length > 0)
-        {
-            <section class="section-highlights">
-                @foreach (var sectionNode in sectionPages)
-                {
-                    var sectionArticles = GetSectionArticles(sectionNode);
-
-                    <article class="section-panel">
-                        <div class="section-panel-header">
-                            <h2><a href="@ResolveContentUrl(sectionNode)">@sectionNode.Name</a></h2>
-                            <a class="section-link" href="@ResolveContentUrl(sectionNode)">View section</a>
-                        </div>
-
-                        @if (sectionArticles.Count > 0)
+        <section class="section-highlights">
+            <article class="section-panel">
+                <div class="section-panel-header">
+                    <h2>
+                        @if (peopleSectionNode != null)
                         {
-                            <ul>
-                                @foreach (var article in sectionArticles)
-                                {
-                                    <li>
-                                        <a href="@ResolveContentUrl(article)">@article.Name</a>
-                                    </li>
-                                }
-                            </ul>
+                            <a href="@ResolveContentUrl(peopleSectionNode)">People</a>
                         }
                         else
                         {
-                            <p>No articles are assigned to this section yet.</p>
+                            @:People
                         }
-                    </article>
+                    </h2>
+                    @if (peopleSectionNode != null)
+                    {
+                        <a class="section-link" href="@ResolveContentUrl(peopleSectionNode)">View section</a>
+                    }
+                </div>
+
+                @if (peopleArticles.Length > 0)
+                {
+                    <div class="section-card-grid section-card-grid-two section-panel-cards">
+                        @foreach (var article in peopleArticles)
+                        {
+                            var articleDate = NormalizeDisplayPublishedOn(article.Value<DateTime?>("publishedOn"));
+                            var articleImageUrl = GetPrimaryImageUrl(article);
+                            var articleLead = article.Value<string>("leadText") ?? article.Value<string>("introText") ?? "Read the full story.";
+
+                            <article class="section-article-card">
+                                <a class="section-article-link" href="@ResolveContentUrl(article)">
+                                    @if (string.IsNullOrWhiteSpace(articleImageUrl) == false)
+                                    {
+                                        <img src="@articleImageUrl" alt="@article.Name" loading="lazy" />
+                                    }
+                                    else
+                                    {
+                                        <div class="section-article-placeholder" aria-hidden="true">No Image</div>
+                                    }
+                                </a>
+
+                                <div class="section-article-content">
+                                    <h3><a href="@ResolveContentUrl(article)">@article.Name</a></h3>
+                                    @if (!string.IsNullOrWhiteSpace(articleLead))
+                                    {
+                                        <p class="section-article-excerpt">@articleLead</p>
+                                    }
+                                    @if (articleDate.HasValue)
+                                    {
+                                        <p class="meta"><span class="meta-date">@articleDate.Value.ToString("dd MMM yyyy")</span></p>
+                                    }
+                                </div>
+                            </article>
+                        }
+                    </div>
                 }
-            </section>
-        }
+                else
+                {
+                    <p>No people stories are available yet.</p>
+                }
+            </article>
+
+            <article class="section-panel">
+                <div class="section-panel-header">
+                    <h2>
+                        @if (propertySectionNode != null)
+                        {
+                            <a href="@ResolveContentUrl(propertySectionNode)">Property</a>
+                        }
+                        else
+                        {
+                            @:Property
+                        }
+                    </h2>
+                    @if (propertySectionNode != null)
+                    {
+                        <a class="section-link" href="@ResolveContentUrl(propertySectionNode)">View section</a>
+                    }
+                </div>
+
+                @if (propertyArticles.Length > 0)
+                {
+                    <div class="section-card-grid section-card-grid-two section-panel-cards">
+                        @foreach (var article in propertyArticles)
+                        {
+                            var articleDate = NormalizeDisplayPublishedOn(article.Value<DateTime?>("publishedOn"));
+                            var articleImageUrl = GetPrimaryImageUrl(article);
+                            var articleLead = article.Value<string>("leadText") ?? article.Value<string>("introText") ?? "Read the full story.";
+
+                            <article class="section-article-card">
+                                <a class="section-article-link" href="@ResolveContentUrl(article)">
+                                    @if (string.IsNullOrWhiteSpace(articleImageUrl) == false)
+                                    {
+                                        <img src="@articleImageUrl" alt="@article.Name" loading="lazy" />
+                                    }
+                                    else
+                                    {
+                                        <div class="section-article-placeholder" aria-hidden="true">No Image</div>
+                                    }
+                                </a>
+
+                                <div class="section-article-content">
+                                    <h3><a href="@ResolveContentUrl(article)">@article.Name</a></h3>
+                                    @if (!string.IsNullOrWhiteSpace(articleLead))
+                                    {
+                                        <p class="section-article-excerpt">@articleLead</p>
+                                    }
+                                    @if (articleDate.HasValue)
+                                    {
+                                        <p class="meta"><span class="meta-date">@articleDate.Value.ToString("dd MMM yyyy")</span></p>
+                                    }
+                                </div>
+                            </article>
+                        }
+                    </div>
+                }
+                else
+                {
+                    <p>No property stories are available yet.</p>
+                }
+            </article>
+        </section>
     </div>
 
     <aside class="homepage-sidebar" aria-label="Supplementary panels">
@@ -1038,6 +1600,7 @@ else
             <h2>Quick Links</h2>
             <ul>
                 <li><a href="/newsletter-signup">Newsletter Sign-up</a></li>
+                <li><a href="/advertise">Advertise</a></li>
                 <li><a href="/jobs">Latest Job Listings</a></li>
                 <li><a href="/about">About TMM</a></li>
             </ul>
@@ -1314,5 +1877,27 @@ else
     private static string NormalizePlainText(string value)
     {
         return Regex.Replace(value ?? string.Empty, "\\s+", " ").Trim();
+    }
+
+    private static string BuildSummaryFromHtml(string? html, int maxLength)
+    {
+        string normalized = NormalizePlainText(StripHtml(html ?? string.Empty));
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return string.Empty;
+        }
+
+        if (normalized.Length <= maxLength)
+        {
+            return normalized;
+        }
+
+        int cutAt = normalized.LastIndexOf(' ', maxLength);
+        if (cutAt <= maxLength / 2)
+        {
+            cutAt = maxLength;
+        }
+
+        return normalized[..cutAt].TrimEnd() + "...";
     }
 }

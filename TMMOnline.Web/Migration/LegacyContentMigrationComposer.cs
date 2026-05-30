@@ -28,6 +28,7 @@ public sealed class LegacyContentMigrationComposer : IComposer
 
 public sealed class LegacyContentMigrationComponent : IComponent
 {
+    private const string SkipMigrationEnvironmentVariable = "TMMONLINE_SKIP_LEGACY_MIGRATION";
     private static readonly string[] PreferredSectionOrder =
     [
         "news",
@@ -77,6 +78,14 @@ public sealed class LegacyContentMigrationComponent : IComponent
 
     public void Initialize()
     {
+        bool skipMigration = string.Equals(Environment.GetEnvironmentVariable(SkipMigrationEnvironmentVariable), "true", StringComparison.OrdinalIgnoreCase);
+        if (skipMigration)
+        {
+            Console.WriteLine("[LegacyMigration] Skipping due to TMMONLINE_SKIP_LEGACY_MIGRATION=true.");
+            _logger.LogInformation("Legacy migration skipped due to environment variable {EnvironmentVariable}.", SkipMigrationEnvironmentVariable);
+            return;
+        }
+
         bool migrationEnabled = _configuration.GetValue<bool>("LegacyMigration:Enabled");
         bool repairImagesEnabled = _configuration.GetValue<bool>("LegacyMigration:RepairImagesOnStartup");
         bool normalizeImportedArticlesEnabled = _configuration.GetValue<bool>("LegacyMigration:NormalizeImportedArticlesOnStartup");
@@ -1559,6 +1568,7 @@ public sealed class LegacyContentMigrationComponent : IComponent
         int tagsBackfilled = 0;
         int primaryImagesBackfilled = 0;
         int duplicatesRemoved = 0;
+        int readOnHydrated = 0;
 
         string baseUrl = _configuration["LegacyMigration:BaseUrl"] ?? "https://tmmonline.nz";
         IContent? home = _contentService.GetRootContent().FirstOrDefault(x => x.ContentType.Alias == "homePage");
@@ -1581,9 +1591,32 @@ public sealed class LegacyContentMigrationComponent : IComponent
 
             string bodyHtml = article.GetValue("bodyText")?.ToString() ?? string.Empty;
             string cleanedBody = CleanBodyHtmlLeadingNoise(bodyHtml, article.Name, out DateTime? extractedPublishedOn, out _, null);
+            string? legacySourceUrl = article.GetValue("legacySourceUrl")?.ToString();
+            LegacyArticleData? readOnData = null;
+
+            if (httpClient != null)
+            {
+                readOnData = TryLoadReadOnLinkedArticleData(httpClient, cleanedBody, legacySourceUrl, baseUrl);
+                if (readOnData != null && string.IsNullOrWhiteSpace(readOnData.BodyHtml) == false)
+                {
+                    if (string.Equals(cleanedBody.Trim(), readOnData.BodyHtml.Trim(), StringComparison.Ordinal) == false)
+                    {
+                        cleanedBody = readOnData.BodyHtml;
+                        changed = true;
+                        readOnHydrated++;
+                        bodyCleaned++;
+                    }
+
+                    if (extractedPublishedOn.HasValue == false && readOnData.PublishedOn.HasValue)
+                    {
+                        extractedPublishedOn = readOnData.PublishedOn;
+                    }
+                }
+            }
+
             if (extractedPublishedOn.HasValue == false)
             {
-                extractedPublishedOn = TryExtractPublishedOnFromBodyHtml(bodyHtml);
+                extractedPublishedOn = TryExtractPublishedOnFromBodyHtml(cleanedBody);
             }
 
             if (string.Equals(cleanedBody, bodyHtml, StringComparison.Ordinal) == false)
@@ -1646,12 +1679,12 @@ public sealed class LegacyContentMigrationComponent : IComponent
 
             if (HasPrimaryImageValue(article) == false && articleMediaFolder != null && httpClient != null)
             {
-                string? fallbackImageUrl = ExtractFirstImageUrlFromBodyHtml(cleanedBody, baseUrl)
+                string? fallbackImageUrl = readOnData?.MainImageUrl
+                    ?? ExtractFirstImageUrlFromBodyHtml(cleanedBody, baseUrl)
                     ?? ExtractFirstImageUrlFromBodyHtml(bodyHtml, baseUrl);
 
                 if (string.IsNullOrWhiteSpace(fallbackImageUrl))
                 {
-                    string? legacySourceUrl = article.GetValue("legacySourceUrl")?.ToString();
                     if (string.IsNullOrWhiteSpace(legacySourceUrl) == false)
                     {
                         if (legacyImageBySourceUrl.TryGetValue(legacySourceUrl, out string? cachedImageUrl))
@@ -1710,19 +1743,6 @@ public sealed class LegacyContentMigrationComponent : IComponent
             }
         }
 
-        string? conferenceSeedUrl = BuildSectionSeedMap(baseUrl)
-            .FirstOrDefault(x => x.TargetSectionSlug.Equals("conference", StringComparison.OrdinalIgnoreCase))
-            .SectionUrl;
-
-        EnsureSectionSeedArticle(
-            articleContentType,
-            "conference",
-            "Conference Coverage Coming Soon",
-            "Conference content is being migrated and will appear here shortly.",
-            conferenceSeedUrl,
-            baseUrl);
-        EnsureSectionSeedArticle(articleContentType, "property-news", "Property News Coverage Coming Soon", "Property news content is being migrated and will appear here shortly.");
-
         duplicatesRemoved = DeduplicateImportedArticles(
             articleContentType.Id,
             sections,
@@ -1733,15 +1753,97 @@ public sealed class LegacyContentMigrationComponent : IComponent
             baseUrl);
 
         _logger.LogInformation(
-            "Imported article normalization completed. Scanned {Scanned}, normalized {Normalized}, dates backfilled {DatesBackfilled}, body cleaned {BodyCleaned}, tags backfilled {TagsBackfilled}, primary images backfilled {PrimaryImagesBackfilled}, contentBlocks reset {BlocksReset}, duplicates removed {DuplicatesRemoved}.",
+            "Imported article normalization completed. Scanned {Scanned}, normalized {Normalized}, dates backfilled {DatesBackfilled}, body cleaned {BodyCleaned}, READ ON hydrated {ReadOnHydrated}, tags backfilled {TagsBackfilled}, primary images backfilled {PrimaryImagesBackfilled}, contentBlocks reset {BlocksReset}, duplicates removed {DuplicatesRemoved}.",
             scanned,
             normalized,
             datesBackfilled,
             bodyCleaned,
+            readOnHydrated,
             tagsBackfilled,
             primaryImagesBackfilled,
             blocksReset,
             duplicatesRemoved);
+    }
+
+    private LegacyArticleData? TryLoadReadOnLinkedArticleData(
+        HttpClient httpClient,
+        string bodyHtml,
+        string? legacySourceUrl,
+        string baseUrl)
+    {
+        string? readOnUrl = TryExtractReadOnArticleUrl(bodyHtml, legacySourceUrl, baseUrl);
+        if (string.IsNullOrWhiteSpace(readOnUrl))
+        {
+            return null;
+        }
+
+        return TryLoadArticleData(httpClient, readOnUrl, baseUrl);
+    }
+
+    private static string? TryExtractReadOnArticleUrl(string bodyHtml, string? legacySourceUrl, string baseUrl)
+    {
+        if (string.IsNullOrWhiteSpace(bodyHtml))
+        {
+            return null;
+        }
+
+        Match readOnMarker = Regex.Match(bodyHtml, "\\[\\[?\\s*read\\s*on\\s*\\]?", RegexOptions.IgnoreCase);
+        if (readOnMarker.Success == false)
+        {
+            return null;
+        }
+
+        int searchStart = readOnMarker.Index;
+        int searchLength = Math.Min(2200, bodyHtml.Length - searchStart);
+        string readOnSegment = bodyHtml.Substring(searchStart, searchLength);
+
+        Match absoluteLinkMatch = Regex.Match(
+            readOnSegment,
+            "(?<url>https?://(?:www\\.)?tmmonline\\.nz/article/\\d+/[^\\s\\\"'<>\\)]+)",
+            RegexOptions.IgnoreCase);
+
+        string? candidate = absoluteLinkMatch.Success
+            ? absoluteLinkMatch.Groups["url"].Value
+            : null;
+
+        if (string.IsNullOrWhiteSpace(candidate))
+        {
+            Match relativeLinkMatch = Regex.Match(
+                readOnSegment,
+                "(?<url>/article/\\d+/[^\\s\\\"'<>\\)]+)",
+                RegexOptions.IgnoreCase);
+
+            if (relativeLinkMatch.Success)
+            {
+                candidate = relativeLinkMatch.Groups["url"].Value;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(candidate))
+        {
+            return null;
+        }
+
+        Uri baseUri = Uri.TryCreate(baseUrl, UriKind.Absolute, out Uri? configuredBase)
+            ? configuredBase
+            : new Uri("https://tmmonline.nz");
+
+        if (Uri.TryCreate(baseUri, candidate, out Uri? resolved) == false)
+        {
+            return null;
+        }
+
+        if (string.IsNullOrWhiteSpace(legacySourceUrl) == false
+            && Uri.TryCreate(legacySourceUrl, UriKind.Absolute, out Uri? currentLegacy)
+            && string.Equals(
+                resolved.GetLeftPart(UriPartial.Path).TrimEnd('/'),
+                currentLegacy.GetLeftPart(UriPartial.Path).TrimEnd('/'),
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return resolved.GetLeftPart(UriPartial.Path);
     }
 
     private int DeduplicateImportedArticles(
