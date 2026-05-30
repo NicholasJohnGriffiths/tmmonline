@@ -73,69 +73,78 @@ void EnsureRoutedSlugCache()
         return;
     }
 
-    lock (routedSlugCacheLock)
+    try
     {
-        if (DateTimeOffset.UtcNow < routedSlugCacheExpiry)
+        lock (routedSlugCacheLock)
         {
-            return;
-        }
+            if (DateTimeOffset.UtcNow < routedSlugCacheExpiry)
+            {
+                return;
+            }
 
-        var contentTypeService = app.Services.GetRequiredService<IContentTypeService>();
-        var contentService = app.Services.GetRequiredService<IContentService>();
+            var contentTypeService = app.Services.GetRequiredService<IContentTypeService>();
+            var contentService = app.Services.GetRequiredService<IContentService>();
 
-        var sectionType = contentTypeService.Get("sectionPage");
-        var articleType = contentTypeService.Get("articlePage");
-        if (sectionType == null && articleType == null)
-        {
-            routedSlugToNodeId = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var sectionType = contentTypeService.Get("sectionPage");
+            var articleType = contentTypeService.Get("articlePage");
+            if (sectionType == null && articleType == null)
+            {
+                routedSlugToNodeId = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                routedSlugCacheExpiry = DateTimeOffset.UtcNow.AddMinutes(5);
+                return;
+            }
+
+            var slugs = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            if (sectionType != null)
+            {
+                var sections = contentService.GetPagedOfType(sectionType.Id, 0, int.MaxValue, out _, null!, null);
+                foreach (var section in sections)
+                {
+                    if (section.Trashed)
+                    {
+                        continue;
+                    }
+
+                    foreach (string slug in GetRouteSlugs(section.Name))
+                    {
+                        if (slugs.ContainsKey(slug) == false)
+                        {
+                            slugs[slug] = section.Id;
+                        }
+                    }
+                }
+            }
+
+            if (articleType != null)
+            {
+                var articles = contentService.GetPagedOfType(articleType.Id, 0, int.MaxValue, out _, null!, null);
+                foreach (var article in articles)
+                {
+                    if (article.Trashed)
+                    {
+                        continue;
+                    }
+
+                    foreach (string slug in GetRouteSlugs(article.Name))
+                    {
+                        // Section routes win on collision (e.g. /rates should always hit section page).
+                        if (slugs.ContainsKey(slug) == false)
+                        {
+                            slugs[slug] = article.Id;
+                        }
+                    }
+                }
+            }
+
+            routedSlugToNodeId = slugs;
             routedSlugCacheExpiry = DateTimeOffset.UtcNow.AddMinutes(5);
-            return;
         }
-
-        var slugs = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        if (sectionType != null)
-        {
-            var sections = contentService.GetPagedOfType(sectionType.Id, 0, int.MaxValue, out _, null!, null);
-            foreach (var section in sections)
-            {
-                if (section.Trashed)
-                {
-                    continue;
-                }
-
-                foreach (string slug in GetRouteSlugs(section.Name))
-                {
-                    if (slugs.ContainsKey(slug) == false)
-                    {
-                        slugs[slug] = section.Id;
-                    }
-                }
-            }
-        }
-
-        if (articleType != null)
-        {
-            var articles = contentService.GetPagedOfType(articleType.Id, 0, int.MaxValue, out _, null!, null);
-            foreach (var article in articles)
-            {
-                if (article.Trashed)
-                {
-                    continue;
-                }
-
-                foreach (string slug in GetRouteSlugs(article.Name))
-                {
-                    // Section routes win on collision (e.g. /rates should always hit section page).
-                    if (slugs.ContainsKey(slug) == false)
-                    {
-                        slugs[slug] = article.Id;
-                    }
-                }
-            }
-        }
-
-        routedSlugToNodeId = slugs;
-        routedSlugCacheExpiry = DateTimeOffset.UtcNow.AddMinutes(5);
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogWarning(ex, "Failed to rebuild routed slug cache. Using empty slug cache temporarily.");
+        routedSlugToNodeId = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        routedSlugCacheExpiry = DateTimeOffset.UtcNow.AddMinutes(1);
     }
 }
 
