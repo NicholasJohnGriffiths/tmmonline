@@ -1,10 +1,31 @@
 
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.HttpOverrides;
+using TMMOnline.Web.Analytics;
+using TMMOnline.Web.Rates;
 using Umbraco.Cms.Core.Services;
 using Umbraco.Cms.Core.DependencyInjection;
 
 WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
+
+string? applicationInsightsConnectionString =
+    builder.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"]
+    ?? builder.Configuration["ApplicationInsights:ConnectionString"];
+
+if (string.IsNullOrWhiteSpace(applicationInsightsConnectionString) == false)
+{
+    builder.Services.AddApplicationInsightsTelemetry(options =>
+    {
+        options.ConnectionString = applicationInsightsConnectionString;
+    });
+}
+
+builder.Services.AddHttpClient();
+builder.Services.AddMemoryCache();
+builder.Services.Configure<MostReadAnalyticsOptions>(builder.Configuration.GetSection("Analytics:MostRead"));
+builder.Services.AddSingleton<IMostReadArticlesService, ApplicationInsightsMostReadArticlesService>();
+builder.Services.Configure<RatesApiOptions>(builder.Configuration.GetSection("RatesApi"));
+builder.Services.AddSingleton<IMortgageRatesService, RatesApiMortgageRatesService>();
 
 string? blobConnectionString = builder.Configuration["Umbraco:Storage:AzureBlob:Media:ConnectionString"]
     ?? builder.Configuration["Umbraco:CMS:Storage:AzureBlob:Media:ConnectionString"];

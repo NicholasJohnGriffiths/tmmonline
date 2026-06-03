@@ -1,4 +1,5 @@
 ﻿@using TMMOnline.Web.Tagging
+@using TMMOnline.Web.Rates
 @using Umbraco.Cms.Core.Models
 @using Umbraco.Cms.Core.Models.PublishedContent
 @using System.Globalization
@@ -7,6 +8,7 @@
 @using System.Text
 @using System.Text.RegularExpressions
 @inherits UmbracoViewPage
+@inject IMortgageRatesService MortgageRatesService
 @{
     Layout = "_Layout.cshtml";
     var lead = Model.Value<string>("leadText");
@@ -63,6 +65,37 @@
         || sectionTags.Contains("conference", StringComparer.OrdinalIgnoreCase);
     var isRatesSection = Model.Name.Contains("rates", StringComparison.OrdinalIgnoreCase)
         || sectionTags.Contains("rates", StringComparer.OrdinalIgnoreCase);
+    string mrtChange = Context.Request.Query["mrt_change"].FirstOrDefault() ?? "1week";
+    string mrtChangeOnly = Context.Request.Query["mrt_change_only"].FirstOrDefault() ?? "0";
+    string mrtType = Context.Request.Query["mrt_type"].FirstOrDefault() ?? "all";
+    if (string.Equals(mrtType, "0", StringComparison.OrdinalIgnoreCase))
+    {
+        mrtType = "all";
+    }
+
+    string mrtTerm = Context.Request.Query["mrt_term"].FirstOrDefault() ?? "all";
+    string mrtCol = Context.Request.Query["mrt_col"].FirstOrDefault() ?? "lender_name";
+    string mrtDir = Context.Request.Query["mrt_dir"].FirstOrDefault() ?? "asc";
+    string mrtOffset = Context.Request.Query["mrt_offset"].FirstOrDefault() ?? string.Empty;
+    string mrtSpecial = Context.Request.Query["mrt_special"].FirstOrDefault() ?? string.Empty;
+    string mrtValue = Context.Request.Query["mrt_value"].FirstOrDefault() ?? string.Empty;
+    string mrtLoan = Context.Request.Query["mrt_loan"].FirstOrDefault() ?? string.Empty;
+    int? requestedTermInMonths = MapLegacyTermToMonths(mrtTerm);
+    var changedRateKeys = isRatesSection && string.Equals(mrtChangeOnly, "1", StringComparison.OrdinalIgnoreCase)
+        ? await MortgageRatesService.GetChangedRateKeysAsync(mrtChange, requestedTermInMonths, Context.RequestAborted)
+        : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    var liveRates = isRatesSection
+        ? ApplyLegacyRatesFilters(
+            await MortgageRatesService.GetRatesAsync(150, requestedTermInMonths, Context.RequestAborted),
+            mrtType,
+            mrtTerm,
+            mrtCol,
+            mrtDir,
+            mrtOffset,
+            mrtSpecial,
+            mrtChangeOnly,
+            changedRateKeys)
+        : Array.Empty<MortgageRateQuote>();
     if (isConferenceSection)
     {
         ViewData["HideFooter"] = true;
@@ -102,6 +135,124 @@
         }
 
         return value.Value.Year <= 1900 ? null : value;
+    }
+
+    int? MapLegacyTermToMonths(string term)
+    {
+        return term switch
+        {
+            "rate_6month" => 6,
+            "rate_1year" => 12,
+            "rate_18month" => 18,
+            "rate_2year" => 24,
+            "rate_3year" => 36,
+            "rate_4year" => 48,
+            "rate_5year" => 60,
+            _ => null
+        };
+    }
+
+    bool MatchesLegacyTerm(MortgageRateQuote rate, string term)
+    {
+        string value = (rate.Term ?? string.Empty).Trim().ToLowerInvariant();
+
+        return term switch
+        {
+            "all" => true,
+            "rate_floating" => value.Contains("floating", StringComparison.OrdinalIgnoreCase)
+                || value.Contains("variable", StringComparison.OrdinalIgnoreCase),
+            "rate_rc" => value.Contains("rc", StringComparison.OrdinalIgnoreCase)
+                || value.Contains("revolving", StringComparison.OrdinalIgnoreCase),
+            _ => true
+        };
+    }
+
+    bool IsMajorBank(string lender)
+    {
+        return lender.Contains("ANZ", StringComparison.OrdinalIgnoreCase)
+            || lender.Contains("ASB", StringComparison.OrdinalIgnoreCase)
+            || lender.Contains("BNZ", StringComparison.OrdinalIgnoreCase)
+            || lender.Contains("Westpac", StringComparison.OrdinalIgnoreCase)
+            || lender.Contains("Kiwibank", StringComparison.OrdinalIgnoreCase);
+    }
+
+    bool IsMinorBank(string lender)
+    {
+        return lender.Contains("SBS", StringComparison.OrdinalIgnoreCase)
+            || lender.Contains("TSB", StringComparison.OrdinalIgnoreCase)
+            || lender.Contains("Co-operative", StringComparison.OrdinalIgnoreCase)
+            || lender.Contains("Heartland", StringComparison.OrdinalIgnoreCase);
+    }
+
+    IEnumerable<MortgageRateQuote> ApplyLegacyRatesFilters(
+        IReadOnlyList<MortgageRateQuote> source,
+        string lenderType,
+        string term,
+        string sortColumn,
+        string sortDirection,
+        string offset,
+        string special,
+        string changeOnly,
+        IReadOnlySet<string> changedKeys)
+    {
+        IEnumerable<MortgageRateQuote> filtered = source;
+
+        string BuildRateKey(MortgageRateQuote rate)
+        {
+            if (string.IsNullOrWhiteSpace(rate.RateId) == false)
+            {
+                return rate.RateId.Trim().ToLowerInvariant();
+            }
+
+            string lender = (rate.Lender ?? string.Empty).Trim().ToLowerInvariant();
+            string product = (rate.Product ?? string.Empty).Trim().ToLowerInvariant();
+            string rateTerm = (rate.Term ?? string.Empty).Trim().ToLowerInvariant();
+            return $"{lender}|{product}|{rateTerm}";
+        }
+
+        if (MapLegacyTermToMonths(term).HasValue == false)
+        {
+            filtered = filtered.Where(rate => MatchesLegacyTerm(rate, term));
+        }
+
+        if (string.Equals(changeOnly, "1", StringComparison.OrdinalIgnoreCase) && changedKeys.Count > 0)
+        {
+            filtered = filtered.Where(rate => changedKeys.Contains(BuildRateKey(rate)));
+        }
+
+        filtered = lenderType switch
+        {
+            "major" => filtered.Where(rate => IsMajorBank(rate.Lender)),
+            "minor" => filtered.Where(rate => IsMinorBank(rate.Lender)),
+            "non-bank" => filtered.Where(rate => IsMajorBank(rate.Lender) == false && IsMinorBank(rate.Lender) == false),
+            _ => filtered
+        };
+
+        if (string.Equals(offset, "1", StringComparison.OrdinalIgnoreCase))
+        {
+            filtered = filtered.Where(rate => rate.Product.Contains("offset", StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (string.Equals(special, "1", StringComparison.OrdinalIgnoreCase))
+        {
+            filtered = filtered.Where(rate => rate.Product.Contains("special", StringComparison.OrdinalIgnoreCase));
+        }
+
+        bool descending = string.Equals(sortDirection, "desc", StringComparison.OrdinalIgnoreCase);
+        if (string.Equals(sortColumn, "lender_name", StringComparison.OrdinalIgnoreCase))
+        {
+            filtered = descending
+                ? filtered.OrderByDescending(rate => rate.Lender).ThenBy(rate => rate.Rate)
+                : filtered.OrderBy(rate => rate.Lender).ThenBy(rate => rate.Rate);
+        }
+        else
+        {
+            filtered = descending
+                ? filtered.OrderByDescending(rate => rate.Rate).ThenBy(rate => rate.Lender)
+                : filtered.OrderBy(rate => rate.Rate).ThenBy(rate => rate.Lender);
+        }
+
+        return filtered.ToArray();
     }
 
     IEnumerable<IPublishedContent> DeduplicateArticles(IEnumerable<IPublishedContent> candidates)
@@ -639,19 +790,120 @@
     {
         <section class="rates-live" aria-label="Latest mortgage rates">
             <h2>Latest Mortgage Rates</h2>
-            <div class="rates-live-links" role="navigation" aria-label="Rates quick filters">
-                <a href="https://tmmonline.nz/rates?mrt_col=rate_rc&amp;mrt_dir=asc&amp;mrt_term=rate_rc" target="_blank" rel="noopener noreferrer">Revolving Credit</a>
-                <a href="https://tmmonline.nz/rates?mrt_offset=1" target="_blank" rel="noopener noreferrer">Offset Mortgages</a>
-                <a href="https://tmmonline.nz/rates?mrt_special=1" target="_blank" rel="noopener noreferrer">Special Rates</a>
-            </div>
-            <div class="rates-live-embed">
-                <iframe
-                    src="https://tmmonline.nz/rates"
-                    title="Latest Mortgage Rates"
-                    loading="lazy"
-                    referrerpolicy="no-referrer-when-downgrade"></iframe>
-            </div>
-            <p class="meta">If the live table does not load in your browser, open <a href="https://tmmonline.nz/rates" target="_blank" rel="noopener noreferrer">tmmonline.nz/rates</a>.</p>
+            <form class="rates-filters" method="get" action="@Context.Request.Path">
+                <p>
+                    <label for="mrt-change">Changes from last:</label>
+                    <select id="mrt-change" name="mrt_change" onchange="this.form.submit()">
+                        <option value="1day" selected="@(mrtChange == "1day" ? "selected" : null)">One day</option>
+                        <option value="1week" selected="@(mrtChange == "1week" ? "selected" : null)">One week</option>
+                        <option value="2week" selected="@(mrtChange == "2week" ? "selected" : null)">Two weeks</option>
+                        <option value="4week" selected="@(mrtChange == "4week" ? "selected" : null)">Four weeks</option>
+                        <option value="3month" selected="@(mrtChange == "3month" ? "selected" : null)">Three months</option>
+                        <option value="6month" selected="@(mrtChange == "6month" ? "selected" : null)">Six months</option>
+                    </select>
+                </p>
+                <p>
+                    <label for="mrt-change-only">Rate movement:</label>
+                    <select id="mrt-change-only" name="mrt_change_only" onchange="this.form.submit()">
+                        <option value="0" selected="@(mrtChangeOnly == "0" ? "selected" : null)">Show all rates</option>
+                        <option value="1" selected="@(mrtChangeOnly == "1" ? "selected" : null)">Changes only</option>
+                    </select>
+                </p>
+                <p>
+                    <label for="mrt-type">Lender type:</label>
+                    <select id="mrt-type" name="mrt_type" onchange="this.form.submit()">
+                        <option value="all" selected="@(mrtType == "all" ? "selected" : null)">All lenders</option>
+                        <option value="major" selected="@(mrtType == "major" ? "selected" : null)">Major banks</option>
+                        <option value="minor" selected="@(mrtType == "minor" ? "selected" : null)">Minor banks</option>
+                        <option value="non-bank" selected="@(mrtType == "non-bank" ? "selected" : null)">Non-bank lenders</option>
+                    </select>
+                </p>
+                <p>
+                    <label for="mrt-term">Term:</label>
+                    <select id="mrt-term" name="mrt_term" onchange="this.form.submit()">
+                        <option value="all" selected="@(mrtTerm == "all" ? "selected" : null)">all</option>
+                        <option value="rate_floating" selected="@(mrtTerm == "rate_floating" ? "selected" : null)">Floating</option>
+                        <option value="rate_6month" selected="@(mrtTerm == "rate_6month" ? "selected" : null)">6 mth</option>
+                        <option value="rate_1year" selected="@(mrtTerm == "rate_1year" ? "selected" : null)">1 year</option>
+                        <option value="rate_18month" selected="@(mrtTerm == "rate_18month" ? "selected" : null)">18 mth</option>
+                        <option value="rate_2year" selected="@(mrtTerm == "rate_2year" ? "selected" : null)">2 years</option>
+                        <option value="rate_3year" selected="@(mrtTerm == "rate_3year" ? "selected" : null)">3 years</option>
+                        <option value="rate_4year" selected="@(mrtTerm == "rate_4year" ? "selected" : null)">4 years</option>
+                        <option value="rate_5year" selected="@(mrtTerm == "rate_5year" ? "selected" : null)">5 years</option>
+                        <option value="rate_rc" selected="@(mrtTerm == "rate_rc" ? "selected" : null)">RC</option>
+                    </select>
+                </p>
+                <p>
+                    <label for="mrt-value">Property value:</label>
+                    <input id="mrt-value" type="text" name="mrt_value" value="@mrtValue" />
+                </p>
+                <p>
+                    <label for="mrt-loan">Loan amount:</label>
+                    <input id="mrt-loan" type="text" name="mrt_loan" value="@mrtLoan" />
+                </p>
+                <p>
+                    <label><input type="checkbox" name="mrt_offset" value="1" checked="@(mrtOffset == "1" ? "checked" : null)" /> Offset only</label>
+                    <label><input type="checkbox" name="mrt_special" value="1" checked="@(mrtSpecial == "1" ? "checked" : null)" /> Special only</label>
+                </p>
+                <input type="hidden" name="mrt_col" value="@mrtCol" />
+                <input type="hidden" name="mrt_dir" value="@mrtDir" />
+                <p>
+                    <button type="submit">Go</button>
+                    <a href="@Context.Request.Path">Reset</a>
+                </p>
+            </form>
+
+            @if (liveRates.Count > 0)
+            {
+                <div class="rates-live-table" role="region" aria-label="Live mortgage rates">
+                    <table class="rates-table">
+                        <thead>
+                            <tr>
+                                <th scope="col">
+                                    Lender
+                                    <a href="@($"{Context.Request.Path}?mrt_change={mrtChange}&mrt_change_only={mrtChangeOnly}&mrt_type={mrtType}&mrt_term={mrtTerm}&mrt_offset={mrtOffset}&mrt_special={mrtSpecial}&mrt_value={mrtValue}&mrt_loan={mrtLoan}&mrt_col=lender_name&mrt_dir=asc")">▲</a>
+                                    <a href="@($"{Context.Request.Path}?mrt_change={mrtChange}&mrt_change_only={mrtChangeOnly}&mrt_type={mrtType}&mrt_term={mrtTerm}&mrt_offset={mrtOffset}&mrt_special={mrtSpecial}&mrt_value={mrtValue}&mrt_loan={mrtLoan}&mrt_col=lender_name&mrt_dir=desc")">▼</a>
+                                </th>
+                                <th scope="col">Product</th>
+                                <th scope="col">Term</th>
+                                <th scope="col">
+                                    Rate
+                                    <a href="@($"{Context.Request.Path}?mrt_change={mrtChange}&mrt_change_only={mrtChangeOnly}&mrt_type={mrtType}&mrt_term={mrtTerm}&mrt_offset={mrtOffset}&mrt_special={mrtSpecial}&mrt_value={mrtValue}&mrt_loan={mrtLoan}&mrt_col=rate&mrt_dir=asc")">▲</a>
+                                    <a href="@($"{Context.Request.Path}?mrt_change={mrtChange}&mrt_change_only={mrtChangeOnly}&mrt_type={mrtType}&mrt_term={mrtTerm}&mrt_offset={mrtOffset}&mrt_special={mrtSpecial}&mrt_value={mrtValue}&mrt_loan={mrtLoan}&mrt_col=rate&mrt_dir=desc")">▼</a>
+                                </th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var rate in liveRates)
+                            {
+                                <tr>
+                                    <th scope="row">@rate.Lender</th>
+                                    <td>@(string.IsNullOrWhiteSpace(rate.Product) ? "-" : rate.Product)</td>
+                                    <td>@(string.IsNullOrWhiteSpace(rate.Term) ? "-" : rate.Term)</td>
+                                    <td>@($"{rate.Rate:0.00}%")</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+
+                var asAt = liveRates
+                    .Select(x => x.UpdatedAt)
+                    .Where(x => x.HasValue)
+                    .Select(x => x!.Value)
+                    .OrderByDescending(x => x)
+                    .FirstOrDefault();
+
+                if (asAt != default)
+                {
+                    <p class="meta">Updated @asAt.ToLocalTime().ToString("dd MMM yyyy h:mm tt")</p>
+                }
+            }
+            else
+            {
+                <p class="meta">Live rates are temporarily unavailable. Please check back shortly.</p>
+                <p class="meta">You can still view the legacy table at <a href="https://tmmonline.nz/rates" target="_blank" rel="noopener noreferrer">tmmonline.nz/rates</a>.</p>
+            }
         </section>
     }
     else if (articles.Length > 0)
